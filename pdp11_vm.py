@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
-import sys
 import pprint
+import sys
 
 import pdp11_aout
 import pdp11_decode
 import pdp11_disassem
 import pdp11_registers
 import pdp11_memory
+import pdp11_util
 
 class VM :
   def __init__(self) :
@@ -28,26 +29,20 @@ class VM :
                       'addressing': None,
                       'address': None,
                     },
-                    'addr': {
-                      'value': None,
-                      'addressing': None,
-                      'address': None,
-                    },
     }
 
+    self.filedescriptors_ = [sys.stdin, sys.stdout, sys.stderr]
+
   def loadAout(self, filename) :
-    f = open('a.out', 'rb')
+    f = open(filename, 'rb')
     program = map(ord, f.read())
     aout = pdp11_aout.getAout(program)
-
     self.memory.load(aout['text'] + aout['data'])
-    self.registers[6] = 0xfff6
     self.registers[7] = aout['header']['a_entry']
 
   def getOperand(self, direction) :
-    if self.operation_mode == "byte" :
-      self.registers.setMode("byte")
-      self.memory.setMode("byte")
+    self.registers.setMode(self.operation_mode)
+    self.memory.setMode(self.operation_mode)
 
     if self.operand[direction]['addressing'] == 'immidiate' :
       value = self.operand[direction]['value']
@@ -74,12 +69,10 @@ class VM :
 
   def getSrc(self) : return self.getOperand('src')
   def getDst(self) : return self.getOperand('dst')
-  def getAddr(self) : return self.getOperand('addr')
 
   def setOperand(self, value, direction) :
-    if self.operation_mode == "byte" :
-      self.registers.setMode("byte")
-      self.memory.setMode("byte")
+    self.registers.setMode(self.operation_mode)
+    self.memory.setMode(self.operation_mode)
 
     if self.operand[direction]['addressing'] == 'immidiate' :
       pass
@@ -115,25 +108,57 @@ class VM :
     return value
 
   def sys(self, num) :
-    if num == 0 :
+    if num == 0 : #indir
       pc = self.registers[7]
       self.registers[7] = self.memory[self.registers[7]]
       self.step()
       self.registers[7] = pc
       self.registers[7] += 2
-    elif num == 1 :
+
+    elif num == 1 : #exit
       sys.exit()
-    elif num == 2 :
+
+    elif num == 2 : #fork
       print "not implement!"
-    elif num == 3 :
-      print "not implement!"
-    elif num == 4 :
+    elif num == 3 : #read
+      f = self.filedescriptors_[self.registers[0]]
       addr = self.memory[self.registers[7]]
       size = self.memory[self.registers[7]+2]
-      print ''.join(map(chr, self.memory[addr:addr+size]))
+
+      self.memory[addr:addr+size] = map(ord, f.read(size))
+
+      self.registers[0] = size
       self.registers[7] += 4
-    elif num == 5 :
-      print "not implement!"
+
+    elif num == 4 : #write
+      f = self.filedescriptors_[self.registers[0]]
+      addr = self.memory[self.registers[7]]
+      size = self.memory[self.registers[7]+2]
+
+      f.write(''.join(map(chr, self.memory[addr:addr+size])))
+
+      self.registers[0] = size
+      self.registers[7] += 4
+
+    elif num == 5 : #open
+      filepath_p = self.memory[self.registers[7]]
+      mode = self.memory[self.registers[7]+2]
+      self.memory.setMode("byte")
+      filepath = ""
+      while self.memory[filepath_p] :
+        filepath += chr(self.memory[filepath_p])
+        filepath_p += 1
+      self.memory.setMode("byte")
+
+      if mode == 0 :
+        f = open(filepath, 'r')
+      else :
+        f = open(filepath, 'w')
+
+      self.registers[0] = len(self.filedescriptors_)
+      self.filedescriptors_.append(f)
+      self.registers[7] += 4
+
     elif num == 6 :
       print "not implement!"
     elif num == 7 :
@@ -144,8 +169,16 @@ class VM :
       print "not implement!"
     elif num == 10 :
       print "not implement!"
-    elif num == 11 :
-      print "not implement!"
+    elif num == 11 : #lseek
+      f = self.filedescriptors_[self.registers[0]]
+      offset = self.memory[self.registers[7]]
+      whence = self.memory[self.registers[7]+2]
+
+      f.seek(offset, whence)
+
+      self.registers[0] = f.tell()
+      self.registers[7] += 4
+
     elif num == 12 :
       print "not implement!"
     elif num == 13 :
@@ -254,35 +287,29 @@ class VM :
       pass
 
   def step(self) :
-    print("%04x,%04x,%04x,%04x,%04x,%04x,sp=%04x,pc=%04x: %s"%
-      (self.registers[0],
-       self.registers[1],
-       self.registers[2],
-       self.registers[3],
-       self.registers[4],
-       self.registers[5],
-       self.registers[6],
-       self.registers[7],
-       pdp11_disassem.getMnemonic(self.memory[:], self.registers[7])[0]))
-
+    self.printState()
     instruction = pdp11_decode.searchMatchInstructionFormat(self.memory, self.registers[7])
 
     if instruction :
       self.registers[7] += instruction['size']
 
-      for (key, value) in instruction['operand'].items() :
-        if '*' == key :
-          if value :
-            self.operation_mode = "byte"
-          else :
-            self.operation_mode = "word"
+      self.operation_mode = "word"
+      if '*' in instruction['operand'] :
+        byte_mode = instruction['operand']['*']
+        if byte_mode :
+          self.operation_mode = "byte"
         else :
           self.operation_mode = "word"
+      else :
+        self.operation_mode = "word"
 
-        if key in ['s', 'd', 'a' ] :
+      for (key, value) in instruction['operand'].items() :
+
+        if key == 'o' :
+          offset = pdp11_util.uint8toint8(instruction['operand']['o'])
+        if key in ['s', 'd'] :
           if key == 's' : direction = 'src'
-          elif key == 'd' : direction = 'dst'
-          else : direction = 'addr'
+          else : direction = 'dst'
           if (value&0x07) != 0x07 :
             if (value>>3) == 0 :
               self.operand[direction]['addressing'] = "register"
@@ -320,12 +347,13 @@ class VM :
               self.operand[direction]['address'] = self.memory[self.registers[value&0x07]]
             elif (value>>3) == 6 :
               self.operand[direction]['addressing'] = "index"
-              self.operand[direction]['address'] = self.registers[value&0x07] + self.memory[self.registers[7]]
+              disp = pdp11_util.uint16toint16(self.memory[self.registers[7]])
+              self.operand[direction]['address'] = self.registers[value&0x07] + disp
               self.registers[7] += 2
             elif (value>>3) == 7 :
               self.operand[direction]['addressing'] = "index deferred"
-              self.operand[direction]['address'] = self.registers[value&0x07] + self.memory[self.registers[7]]
-              self.operand[direction]['address'] = self.memory[self.registers[value&0x07] + self.memory[self.registers[7]]]
+              disp = pdp11_util.uint16toint16(self.memory[self.registers[7]])
+              self.operand[direction]['address'] = self.memory[self.registers[value&0x07] + disp]
               self.registers[7] += 2
             else :
               pass
@@ -340,11 +368,15 @@ class VM :
               self.registers[7] += 2
             elif (value>>3) == 6 :
               self.operand[direction]['addressing'] = "relative"
-              self.operand[direction]['address'] = self.memory[self.registers[7]] + self.registers[7] + 2
+              self.operand[direction]['address'] = (
+                self.memory[self.registers[7]]
+                + self.registers[7] + 2)
               self.registers[7] += 2
             elif (value>>3) == 7 :
               self.operand[direction]['addressing'] = "relative indirect"
-              self.operand[direction]['address'] = self.memory[self.memory[self.registers[7]] + self.registers[7] + 2]
+              self.operand[direction]['address'] = (self.memory[
+                self.memory[self.registers[7]]
+                + self.registers[7] + 2])
               self.registers[7] += 2
             else :
               pass
@@ -358,13 +390,16 @@ class VM :
       elif instruction['opcode'] == "nop" :
         print "not implement!"
       elif instruction['opcode'] == "clr" :
+        self.setDst(0)
+
         self.condition_code['n'] = False
         self.condition_code['z'] = True
         self.condition_code['v'] = False
         self.condition_code['c'] = False
+
       elif instruction['opcode'] == "inc" :
-        v = self.getAddr()+1
-        self.setAddr(v)
+        v = self.getDst()+1
+        self.setDst(v)
 
         if (0xffff & v) > 0x7fff :
           self.condition_code['n'] = True
@@ -378,32 +413,96 @@ class VM :
           self.condition_code['v'] = True
         else :
           self.condition_code['v'] = False
-      elif instruction['opcode'] == "dec" :
-        v = self.getAddr()-1
-        self.setAddr(v)
 
-        if (0xffff & v) > 0x7fff :
+      elif instruction['opcode'] == "dec" :
+        dst = self.getDst()
+        result = self.getDst()-1
+        self.setDst(result)
+
+        if (result&0xffff) >= 0x8000 :
           self.condition_code['n'] = True
         else :
           self.condition_code['n'] = False
-        if (0xffff & v) == 0 :
+
+        if (result&0xffff) == 0 :
           self.condition_code['z'] = True
         else :
           self.condition_code['z'] = False
-        if (0xffff & v) == 0x8000 :
-          self.condition_code['v'] = True
+
+        if self.operation_mode == "byte" :
+          if (dst&0xff) == 0x80 :
+            self.condition_code['v'] = True
+          else :
+            self.condition_code['v'] = False
         else :
-          self.condition_code['v'] = False
+          if (dst&0xffff) == 0x8000 :
+            self.condition_code['v'] = True
+          else :
+            self.condition_code['v'] = False
+
       elif instruction['opcode'] == "adc" :
         print "not implement!"
       elif instruction['opcode'] == "sbc" :
         print "not implement!"
       elif instruction['opcode'] == "tst" :
-        addr = self.operand['addr']['address']
-        self.memory[addr]
-        #TODO change condition code
+        result = self.getDst()
+        self.setDst(result)
+
+        if self.operation_mode == "byte" :
+          if (result&0xff) >= 0x80 :
+            self.condition_code['n'] = True
+          else :
+            self.condition_code['n'] = False
+
+          if (result&0xff) == 0 :
+            self.condition_code['z'] = True
+          else :
+            self.condition_code['z'] = False
+        else :
+          if (result&0xffff) > 0x8000 :
+            self.condition_code['n'] = True
+          else :
+            self.condition_code['n'] = False
+
+          if (result&0xffff) == 0 :
+            self.condition_code['z'] = True
+          else :
+            self.condition_code['z'] = False
+
+        self.condition_code['v'] = False
+
+        self.condition_code['c'] = False
+
       elif instruction['opcode'] == "neg" :
-        print "not implement!"
+        result = (-self.getDst())&0xffff
+        self.setDst(result)
+
+        if (result&0xffff) >= 0x8000 :
+          self.condition_code['n'] = True
+        else :
+          self.condition_code['n'] = False
+
+        if (result&0xffff) == 0 :
+          self.condition_code['z'] = True
+        else :
+          self.condition_code['z'] = False
+
+        if self.operation_mode == "byte" :
+          if (result&0xff) == 0x80 :
+            self.condition_code['v'] = True
+          else :
+            self.condition_code['v'] = False
+        else :
+          if (result&0xffff) == 0x8000 :
+            self.condition_code['v'] = True
+          else :
+            self.condition_code['v'] = False
+
+        if (result&0xffff) == 0 :
+          self.condition_code['c'] = True
+        else :
+          self.condition_code['c'] = False
+
       elif instruction['opcode'] == "com" :
         print "not implement!"
       elif instruction['opcode'] == "ror" :
@@ -413,7 +512,8 @@ class VM :
       elif instruction['opcode'] == "asr" :
         print "not implement!"
       elif instruction['opcode'] == "asl" :
-        print "not implement!"
+        result = (self.getDst()<<1)
+        self.setDst(result)
       elif instruction['opcode'] == "swab" :
         print "not implement!"
       elif instruction['opcode'] == "sxt" :
@@ -423,63 +523,206 @@ class VM :
       elif instruction['opcode'] == "mul" :
         print "not implement!"
       elif instruction['opcode'] == "div" :
-        print "not implement!"
+        result = self.getDst()/self.getSrc()
+        
+        if (result&0xffff) >= 0x8000 :
+          self.condition_code['n'] = True
+        else :
+          self.condition_code['n'] = False
+
+        if (result&0xffff) == 0 :
+          self.condition_code['z'] = True
+        else :
+          self.condition_code['z'] = False
+
+        if self.getSrc() == 0 :
+          self.condition_code['v'] = True
+        else :
+          self.condition_code['v'] = False
+
+        if self.getSrc() == 0 :
+          self.condition_code['c'] = True
+        else :
+          self.condition_code['c'] = False
+
       elif instruction['opcode'] == "ash" :
-        print "not implement!"
+        dst = self.getDst()
+        nn = pdp11_util.uint6toint6((self.getSrc()&0x3f))
+        result = pdp11_util.bitshift_uint16(dst, nn)
+        self.setDst(result)
+
+        if (result&0xffff) >= 0x8000 :
+          self.condition_code['n'] = True
+        else :
+          self.condition_code['n'] = False
+
+        if (result&0xffff) == 0 :
+          self.condition_code['z'] = True
+        else :
+          self.condition_code['z'] = False
+
+        if (result&0x8000) != (dst&0x8000) :
+          self.condition_code['v'] = True
+        else :
+          self.condition_code['v'] = False
+
+        if nn :
+          if result&0x10000 :
+            self.condition_code['c'] = True
+          else :
+            self.condition_code['c'] = False
+        else :
+          self.condition_code['c'] = False
+
       elif instruction['opcode'] == "ashc" :
         print "not implement!"
       elif instruction['opcode'] == "xor" :
         print "not implement!"
       elif instruction['opcode'] == "mov" :
-        self.setDst(self.getSrc())
+        result = self.getSrc()
+        if self.operation_mode == "byte" :
+          if result&0x80 :
+            result |= 0xff00
+          else :
+            result &= 0x00ff
+        self.setDst(result)
 
-        if self.getDst() > 0x7fff :
+        if (result&0xffff) >= 0x8000 :
           self.condition_code['n'] = True
         else :
           self.condition_code['n'] = False
-        if self.getDst() == 0:
+
+        if (result&0xffff) == 0 :
           self.condition_code['z'] = True
         else :
           self.condition_code['z'] = False
+
         self.condition_code['v'] = False
+
       elif instruction['opcode'] == "add" :
-        print "not implement!"
-      elif instruction['opcode'] == "sub" :
-        self.setDst(self.getDst() - self.getSrc())
-      elif instruction['opcode'] == "cmp" :
-        if (0xffff & (self.getDst() + self.getSrc())) > 0x7fff :
+        result = self.getSrc()+self.getDst()
+        self.setDst(result)
+
+        if result < 0 :
           self.condition_code['n'] = True
         else :
           self.condition_code['n'] = False
-        if (0xffff & (self.getDst() + self.getSrc())) == 0 :
+        if result == 0 :
           self.condition_code['z'] = True
         else :
           self.condition_code['z'] = False
         if (((0x8000 & self.getSrc()) != (0x8000 & self.getDst())) and
-            ((0x8000 & (self.getDst() + self.getSrc())) == (0x8000 & self.getDst()))) :
+            ((0x8000 & result) == (0x8000 & self.getDst()))) :
           self.condition_code['v'] = True
         else :
           self.condition_code['v'] = False
-        if (self.getDst() + self.getSrc()) < 0xffff :
+        if result < 0x10000:
           self.condition_code['c'] = True
         else :
           self.condition_code['c'] = False
 
+      elif instruction['opcode'] == "sub" :
+        result = self.getDst()-self.getSrc()
+        self.setDst(result)
+
+        if result < 0 :
+          self.condition_code['n'] = True
+        else :
+          self.condition_code['n'] = False
+        if result == 0 :
+          self.condition_code['z'] = True
+        else :
+          self.condition_code['z'] = False
+        if (((0x8000 & self.getSrc()) != (0x8000 & self.getDst())) and
+            ((0x8000 & result) == (0x8000 & self.getDst()))) :
+          self.condition_code['v'] = True
+        else :
+          self.condition_code['v'] = False
+        if result > 0xffff:
+          self.condition_code['c'] = True
+        else :
+          self.condition_code['c'] = False
+
+      elif instruction['opcode'] == "cmp" :
+        if self.operation_mode == "byte" :
+          result = self.getSrc()+((-self.getDst())&0xff)
+          if (result&0xff) > 0x80 :
+            self.condition_code['n'] = True
+          else :
+            self.condition_code['n'] = False
+
+          if (result&0xff) == 0 :
+            self.condition_code['z'] = True
+          else :
+            self.condition_code['z'] = False
+
+          if (((0x80 & self.getSrc()) != (0x80 & self.getDst())) and
+              ((0x80 & result) == (0x80 & self.getDst()))) :
+            self.condition_code['v'] = True
+          else :
+            self.condition_code['v'] = False
+
+          if result < 0x100:
+            self.condition_code['c'] = True
+          else :
+            self.condition_code['c'] = False
+        else :
+          result = self.getSrc()+((-self.getDst())&0xffff)
+
+          if (result&0xffff) >= 0x8000 :
+            self.condition_code['n'] = True
+          else :
+            self.condition_code['n'] = False
+
+          if (result&0xffff) == 0 :
+            self.condition_code['z'] = True
+          else :
+            self.condition_code['z'] = False
+
+          if (((0x8000 & self.getSrc()) != (0x8000 & self.getDst())) and
+              ((0x8000 & result) == (0x8000 & self.getDst()))) :
+            self.condition_code['v'] = True
+          else :
+            self.condition_code['v'] = False
+
+          if result < 0x10000:
+            self.condition_code['c'] = True
+          else :
+            self.condition_code['c'] = False
+
       elif instruction['opcode'] == "bis" :
         print "not implement!"
       elif instruction['opcode'] == "bic" :
-        print "not implement!"
+        result = (~self.getSrc())&self.getDst()
+        self.setDst(result)
+
+        if (result&0x8000) >= 0x8000 :
+          self.condition_code['n'] = True
+        else :
+          self.condition_code['n'] = False
+
+        if (result&0xffff) == 0 :
+          self.condition_code['z'] = True
+        else :
+          self.condition_code['z'] = False
+
+        self.condition_code['v'] = False
+
+        self.condition_code['c'] = True
+
       elif instruction['opcode'] == "bit" :
         print "not implement!"
       elif instruction['opcode'] == "br" :
-        print "not implement!"
+        self.registers[7] += 2*offset
+
       elif instruction['opcode'] == "bne" :
         if self.condition_code['z'] == False :
-          self.registers[7] += 2*instruction['operand']['o']
+          self.registers[7] += 2*offset
+
       elif instruction['opcode'] == "beq" :
-        #print "%04X"%(self.memory[self.registers[7]-2])
         if self.condition_code['z'] == True :
-          self.registers[7] += 2*instruction['operand']['o']
+          self.registers[7] += 2*offset
+
       elif instruction['opcode'] == "bpl" :
         print "not implement!"
       elif instruction['opcode'] == "bmi" :
@@ -492,38 +735,57 @@ class VM :
         print "not implement!"
       elif instruction['opcode'] == "bcc" :
         if self.condition_code['c'] == False :
-          self.registers[7] += 2*instruction['operand']['o']
+          self.registers[7] += 2*offset
+
       elif instruction['opcode'] == "bcs" :
         print "not implement!"
       elif instruction['opcode'] == "bge" :
-        print "not implement!"
+        if ( (self.condition_code['n'] != self.condition_code['v']) == False) :
+          self.registers[7] += 2*offset
+
       elif instruction['opcode'] == "blt" :
-        print "not implement!"
+        if ( (self.condition_code['n'] != self.condition_code['v']) == True) :
+          self.registers[7] += 2*offset
+
       elif instruction['opcode'] == "bgt" :
         if ( self.condition_code['z'] or
              (self.condition_code['n'] != self.condition_code['v'])) == False :
-          self.registers[7] += 2*instruction['operand']['o']
+          self.registers[7] += 2*offset
+
       elif instruction['opcode'] == "ble" :
-        print "not implement!"
+        if ( self.condition_code['z'] or
+             (self.condition_code['n'] != self.condition_code['v'])) == True:
+          self.registers[7] += 2*offset
+
       elif instruction['opcode'] == "bhi" :
         if ( self.condition_code['c'] == False and
              self.condition_code['z'] == False ) :
-          self.registers[7] += 2*instruction['operand']['o']
+          self.registers[7] += 2*offset
+
       elif instruction['opcode'] == "blos" :
         print "not implement!"
       elif instruction['opcode'] == "jmp" :
-        addr = self.operand['addr']['address']
+        addr = self.operand['dst']['address']
         self.registers[7] = addr
+
       elif instruction['opcode'] == "sob" :
-        print "not implement!"
+        result = self.registers[instruction['operand']['r']]-1
+        self.registers[instruction['operand']['r']] = result
+        addr = self.operand['dst']['address']
+
+        if (result&0xffff) != 0 :
+          self.registers[7] -= 2*addr
+
       elif instruction['opcode'] == "jsr" :
-        addr = self.operand['addr']['address']
+        addr = self.operand['dst']['address']
         self.push(self.registers[instruction['operand']['r']])
         self.registers[instruction['operand']['r']] = self.registers[7] 
         self.registers[7] = addr
+
       elif instruction['opcode'] == "rts" :
         self.registers[7] = self.registers[instruction['operand']['r']]
         self.registers[instruction['operand']['r']] = self.pop()
+
       elif instruction['opcode'] == "rti" :
         print "not implement!"
       elif instruction['opcode'] == "rpt" :
@@ -535,19 +797,46 @@ class VM :
         y = instruction['operand']['y']
         z = instruction['operand']['z']
         self.sys((y<<2)+z)
+
       elif instruction['opcode'] == "rtt" :
         addr = self.pop()
         self.registers[7] = addr
+
       else :
-        pass
+        print "not implement!"
     else :
       self.registers[7] += 2
 
-  def run(self) :
+  def run(self, argv) :
+    argv_ = []
+    argv_ += [len(argv)&0xff, (len(argv)>>8)&0xff]
+    address = 0x10000
+    for arg in argv :
+      address -= len(arg)+1
+      argv_ += [address&0xff, (address>>8)&0xff]
+    argv_ += map(ord, '\0'.join(reversed(argv))+'\0')
+
+    self.memory.load(argv_, 0x10000-len(argv_))
+    self.registers[6] = 0x10000-len(argv_)
+    
     while True :
       self.step()
 
+  def printState(self) :
+    print("%04x,%04x,%04x,%04x,%04x,%04x,sp=%04x,pc=%04x: %s"%
+      (self.registers[0],
+       self.registers[1],
+       self.registers[2],
+       self.registers[3],
+       self.registers[4],
+       self.registers[5],
+       self.registers[6],
+       self.registers[7],
+       pdp11_disassem.getMnemonic(self.memory[:], self.registers[7])[0]))
+
 if __name__ == '__main__':
   vm = VM()
-  vm.loadAout('a.out');
-  vm.run()
+  vm.loadAout('/usr/local/v6root/bin/nm');
+  vm.run(['a.out'])
+  #vm.run(['arg1', 'arg2', 'arg3', 'arg4'])
+  #vm.run([])
