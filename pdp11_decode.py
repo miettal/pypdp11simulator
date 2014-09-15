@@ -36,7 +36,6 @@ instruction_table = {
   "[00000011][oooooooo]": "beq",
   "[10000000][oooooooo]": "bpl",
   "[10000001][oooooooo]": "bmi",
-  "[10000001][oooooooo]": "bmi",
   "[10000100][oooooooo]": "bvc",
   "[10000101][oooooooo]": "bvs",
   "[10000110][oooooooo]": "bcc",
@@ -56,6 +55,12 @@ instruction_table = {
   "[0]00004": "iot",
   "[1]04xyz": "sys",
   "[0]00004": "rtt",
+#v6
+  "[1]70000": "cfcc",
+  "[1]70001": "setf",
+  "[1]70002": "seti",
+  "[1]70011": "setd",
+  "[1]70012": "setl",
 }
 
 def searchMatchInstructionFormat(code, ptr) :

@@ -4,15 +4,17 @@ import pdp11_decode
 import pdp11_aout
 import pdp11_util
 
-def getMnemonic(code, ptr) :
-  instruction = pdp11_decode.searchMatchInstructionFormat(code, ptr)
+def getMnemonic(instruction, code, ptr) :
 
   if not instruction :
     mnemonic = "unknown"
     ptr += 2
   else :
-    mnemonic = "%s"%instruction['opcode']
+    mnemonic = ""
+    mnemonic += "%s"%instruction['opcode']
     ptr += instruction['size']
+
+    op_num = 0
 
     if '*' in instruction['operand'] :
       byte_mode = instruction['operand']['*']
@@ -22,19 +24,21 @@ def getMnemonic(code, ptr) :
     mnemonic += " "
 
     if 's' in instruction['operand'] :
+      if 1 <= op_num : mnemonic += ", "
+      op_num += 1
       s = instruction['operand']['s']
       if (s&0x07) == 0x07 :
         if (s>>3) == 2 :
-          mnemonic += "$%04x"%((code[ptr+1]<<8)+code[ptr])
+          mnemonic += "$%x"%(((code[ptr+1]<<8)+code[ptr])&0xffff)
           ptr += 2
         elif (s>>3) == 3 :
-          mnemonic += "*$%04x"%((code[ptr+1]<<8)+code[ptr])
+          mnemonic += "*$%04x"%(((code[ptr+1]<<8)+code[ptr])&0xffff)
           ptr += 2
         elif (s>>3) == 6 :
-          mnemonic += "%04x"%((code[ptr+1]<<8)+code[ptr]+ptr+2)
+          mnemonic += "%04x"%(((code[ptr+1]<<8)+code[ptr]+ptr+2)&0xffff)
           ptr += 2
         elif (s>>3) == 7 :
-          mnemonic += "*%04x"%((code[ptr+1]<<8)+code[ptr]+ptr+2)
+          mnemonic += "*%04x"%(((code[ptr+1]<<8)+code[ptr]+ptr+2)&0xffff)
           ptr += 2
         else :
           pass
@@ -61,27 +65,31 @@ def getMnemonic(code, ptr) :
           ptr += 2
         else :
           pass
-      mnemonic += ', '
 
     if 'r' in instruction['operand'] :
+      if 1 <= op_num : mnemonic += ", "
+      op_num += 1
       r = instruction['operand']['r']
       mnemonic += "%s"%(register_name(r))
-      mnemonic += ", "
 
     if 'd' in instruction['operand'] :
+      if 1 <= op_num : mnemonic += ", "
+      op_num += 1
       d = instruction['operand']['d']
-      if (d&0x07) == 0x07 :
+      if instruction['opcode'] == "sob" :
+        mnemonic += "%d"%(d&0x07)
+      elif (d&0x07) == 0x07 :
         if (d>>3) == 2 :
-          mnemonic += "$%04x"%((code[ptr+1]<<8)+code[ptr])
+          mnemonic += "$%x"%(((code[ptr+1]<<8)+code[ptr])&0xffff)
           ptr += 2
         elif (d>>3) == 3 :
-          mnemonic += "*$%04x"%((code[ptr+1]<<8)+code[ptr])
+          mnemonic += "*$%04x"%(((code[ptr+1]<<8)+code[ptr])&0xffff)
           ptr += 2
         elif (d>>3) == 6 :
-          mnemonic += "%04x"%((code[ptr+1]<<8)+code[ptr]+ptr+2)
+          mnemonic += "%04x"%(((code[ptr+1]<<8)+code[ptr]+ptr+2)&0xffff)
           ptr += 2
         elif (d>>3) == 7 :
-          mnemonic += "@%04x"%((code[ptr+1]<<8)+code[ptr])
+          mnemonic += "*%04x"%((ptr+(code[ptr+1]<<8)+code[ptr]+2)&0xffff)
           ptr += 2
         else :
           pass
@@ -110,14 +118,18 @@ def getMnemonic(code, ptr) :
           pass
 
     if 'o' in instruction['operand'] :
+      if 1 <= op_num : mnemonic += ", "
+      op_num += 1
       offset = pdp11_util.uint8toint8(instruction['operand']['o'])
       mnemonic += "%04x"%(ptr + offset*2)
   
     if 'x' in instruction['operand'] :
+      if 1 <= op_num : mnemonic += ", "
+      op_num += 1
       x = instruction['operand']['x']
       y = instruction['operand']['y']
       z = instruction['operand']['z']
-      mnemonic += "%04x"%((y<<2)+z)
+      mnemonic += "%x"%((y<<3)+z)
 
   return (mnemonic, ptr)
 

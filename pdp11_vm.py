@@ -1,16 +1,25 @@
 # -*- coding: utf-8 -*-
-import pprint
 import sys
+from pprint import pprint as pp
 
 import pdp11_aout
 import pdp11_decode
 import pdp11_disassem
 import pdp11_registers
 import pdp11_memory
+import pdp11_operand
 import pdp11_util
 
+class SysExit(Exception):
+    def __init__(self, value=''):
+        self.value = value
+    def __str__(self):
+        return repr(self.value)
+
 class VM :
-  def __init__(self) :
+  def __init__(self, debug=False) :
+    self.aout = ""
+
     self.memory = pdp11_memory.Memory()
     self.registers = pdp11_registers.Registers()
     self.condition_code = {'n':False,
@@ -19,84 +28,22 @@ class VM :
                            'c':False,
     }
     self.operation_mode = None
-    self.operand = {'dst': {
-                      'value': None,
-                      'addressing': None,
-                      'address': None,
-                    },
-                    'src': {
-                      'value': None,
-                      'addressing': None,
-                      'address': None,
-                    },
-    }
 
-    self.filedescriptors_ = [sys.stdin, sys.stdout, sys.stderr]
+    self.dst = pdp11_operand.Operand(self.memory, self.registers)
+    self.src = pdp11_operand.Operand(self.memory, self.registers)
+    self.reg = pdp11_operand.Operand(self.memory, self.registers)
 
-  def loadAout(self, filename) :
-    f = open(filename, 'rb')
-    program = map(ord, f.read())
-    aout = pdp11_aout.getAout(program)
-    self.memory.load(aout['text'] + aout['data'])
-    self.registers[7] = aout['header']['a_entry']
 
-  def getOperand(self, direction) :
-    self.registers.setMode(self.operation_mode)
-    self.memory.setMode(self.operation_mode)
+    self.filedescriptors = [None for x in range(0xffff)]
 
-    if self.operand[direction]['addressing'] == 'immidiate' :
-      value = self.operand[direction]['value']
-    elif self.operand[direction]['addressing'] == 'register' :
-      value = self.registers[self.operand[direction]['address']]
-    elif ( self.operand[direction]['addressing'] == 'register deferred' or
-           self.operand[direction]['addressing'] == 'autoincrement' or
-           self.operand[direction]['addressing'] == 'autoincrement deferred' or
-           self.operand[direction]['addressing'] == 'autodecrement' or
-           self.operand[direction]['addressing'] == 'autodecrement deferred' or
-           self.operand[direction]['addressing'] == 'index' or
-           self.operand[direction]['addressing'] == 'index deferred' or
-           self.operand[direction]['addressing'] == 'absolute' or
-           self.operand[direction]['addressing'] == 'relative' or
-           self.operand[direction]['addressing'] == 'relative indirect' ) :
-      value = self.memory[self.operand[direction]['address']]
-    else :
-      pass
-
-    self.registers.setMode("word")
-    self.memory.setMode("word")
-
-    return value
-
-  def getSrc(self) : return self.getOperand('src')
-  def getDst(self) : return self.getOperand('dst')
-
-  def setOperand(self, value, direction) :
-    self.registers.setMode(self.operation_mode)
-    self.memory.setMode(self.operation_mode)
-
-    if self.operand[direction]['addressing'] == 'immidiate' :
-      pass
-    elif self.operand[direction]['addressing'] == 'register' :
-      self.registers[self.operand[direction]['address']] = value
-    elif ( self.operand[direction]['addressing'] == 'register deferred' or
-           self.operand[direction]['addressing'] == 'autoincrement' or
-           self.operand[direction]['addressing'] == 'autoincrement deferred' or
-           self.operand[direction]['addressing'] == 'autodecrement' or
-           self.operand[direction]['addressing'] == 'autodecrement deferred' or
-           self.operand[direction]['addressing'] == 'index' or
-           self.operand[direction]['addressing'] == 'index deferred' or
-           self.operand[direction]['addressing'] == 'absolute' or
-           self.operand[direction]['addressing'] == 'relative' or
-           self.operand[direction]['addressing'] == 'relative indirect' ) :
-      self.memory[self.operand[direction]['address']] = value
-    else :
-      pass
-
-    self.registers.setMode("word")
-    self.memory.setMode("word")
-
-  def setDst(self, value) : self.setOperand(value, 'dst')
-  def setAddr(self, value) : self.setOperand(value, 'addr')
+    self.debug = debug
+    self.symbol = ""
+    self.state = ""
+    self.disassemble = ""
+    self.dst.memory_dump = ""
+    self.src.memory_dump = ""
+    self.reg.memory_dump = ""
+    self.syscall = ""
 
   def push(self, value) :
     self.registers[6] -= 2
@@ -109,19 +56,35 @@ class VM :
 
   def sys(self, num) :
     if num == 0 : #indir
+      #store
       pc = self.registers[7]
+      disassemble = self.disassemble
+      state = self.state
+
+      #syscall
       self.registers[7] = self.memory[self.registers[7]]
       self.step()
+
+      #load
       self.registers[7] = pc
       self.registers[7] += 2
+      self.disassemble = disassemble
+      self.state = state
 
     elif num == 1 : #exit
-      sys.exit()
+      info = pdp11_util.uint16toint16(self.registers[0])
+
+      self.syscall = '<exit({:d})>'.format(info)
+
+      raise SysExit()
 
     elif num == 2 : #fork
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
+
     elif num == 3 : #read
-      f = self.filedescriptors_[self.registers[0]]
+      filedescriptor = self.registers[0]
+      f = self.filedescriptors[filedescriptor]
       addr = self.memory[self.registers[7]]
       size = self.memory[self.registers[7]+2]
 
@@ -130,8 +93,11 @@ class VM :
       self.registers[0] = size
       self.registers[7] += 4
 
+      self.syscall = '<read({:d}, 0x{:04x}, {:d}) => {:d}>'.format(filedescriptor, addr, size, self.registers[0])
+
     elif num == 4 : #write
-      f = self.filedescriptors_[self.registers[0]]
+      filedescriptor = self.registers[0]
+      f = self.filedescriptors[filedescriptor]
       addr = self.memory[self.registers[7]]
       size = self.memory[self.registers[7]+2]
 
@@ -139,6 +105,8 @@ class VM :
 
       self.registers[0] = size
       self.registers[7] += 4
+
+      self.syscall = '<write({:d}, 0x{:04x}, {:d}) => {:d}>'.format(filedescriptor, addr, size, self.registers[0])
 
     elif num == 5 : #open
       filepath_p = self.memory[self.registers[7]]
@@ -155,22 +123,66 @@ class VM :
       else :
         f = open(filepath, 'w')
 
-      self.registers[0] = len(self.filedescriptors_)
-      self.filedescriptors_.append(f)
+      for (i, filedescriptor) in enumerate(self.filedescriptors) :
+        if filedescriptor is None :
+          self.filedescriptors[i] = f
+          break
+
+      self.registers[0] = i
       self.registers[7] += 4
 
-    elif num == 6 :
-      print "not implement!"
+      self.syscall = '<open("{}", {}) => {}>'.format(filepath, mode, self.registers[0])
+
+    elif num == 6 : #close
+      fd = self.registers[0]
+      self.filedescriptors[fd] = None
+
+      self.registers[0] = 0
+
+      self.syscall = '<close({}) => {}>'.format(fd, 0)
+
     elif num == 7 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 8 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 9 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 10 :
-      print "not implement!"
-    elif num == 11 : #lseek
-      f = self.filedescriptors_[self.registers[0]]
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
+    elif num == 11 :
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
+    elif num == 12 :
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
+    elif num == 13 :
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
+    elif num == 14 :
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
+    elif num == 15 :
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
+    elif num == 16 :
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
+    elif num == 17 : #break
+      addr = self.memory[self.registers[7]]
+
+      self.registers[0] = 0
+
+      self.syscall = '<brk(0x{:04x}) => {}>'.format(addr, 0)
+    elif num == 18 :
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
+    elif num == 19 : #seek
+      filedescriptor = self.registers[0]
+      f = self.filedescriptors[self.registers[0]]
       offset = self.memory[self.registers[7]]
       whence = self.memory[self.registers[7]+2]
 
@@ -179,116 +191,204 @@ class VM :
       self.registers[0] = f.tell()
       self.registers[7] += 4
 
-    elif num == 12 :
-      print "not implement!"
-    elif num == 13 :
-      print "not implement!"
-    elif num == 14 :
-      print "not implement!"
-    elif num == 15 :
-      print "not implement!"
-    elif num == 16 :
-      print "not implement!"
-    elif num == 17 :
-      print "not implement!"
-    elif num == 18 :
-      print "not implement!"
-    elif num == 19 :
-      print "not implement!"
+      self.syscall = '<lseek({}, {}, {}) => {}>'.format(filedescriptor, offset, whence, self.registers[0])
+
     elif num == 20 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 21 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 22 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 23 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 24 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 25 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 26 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 27 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 28 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 29 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 30 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 31 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 32 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 33 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 34 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 35 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 36 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 37 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 38 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 39 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 40 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 41 :
-      print "not implement!"
+      fd = self.registers[0]
+      f = self.filedescriptors[fd]
+      for (i, filedescriptor) in enumerate(self.filedescriptors) :
+        if filedescriptor is None :
+          self.filedescriptors[i] = f
+          break
+      self.registers[0] = i
+
+      self.syscall = '<dup({}) => {}>'.format(fd, i)
+
     elif num == 42 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 43 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 44 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 45 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 46 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 47 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 48 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 49 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 50 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 51 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 52 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 53 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 54 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 55 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 56 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 57 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 58 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 59 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 60 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 61 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 62 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     elif num == 63 :
-      print "not implement!"
+      if self.debug : self.debug.write(str(num)+" ")
+      if self.debug : self.debug.write("not implement!\n")
     else :
       pass
 
+    self.condition_code['c'] = False
+
   def step(self) :
-    self.printState()
     instruction = pdp11_decode.searchMatchInstructionFormat(self.memory, self.registers[7])
+
+    self.symbol = ""
+    self.state = ""
+    self.disassemble = ""
+    self.dst.memory_dump= ""
+    self.src.memory_dump= ""
+    self.reg.memory_dump= ""
+    self.syscall = ""
+
+    #symbol
+    for (k, v) in self.aout['syms']['symbol_table'].items() :
+      if v['address'] == self.registers[7] and k[0] != '~' :
+        self.symbol = k
+
+    #state
+    for i in range(7) :
+      self.state += "{:04x} ".format(self.registers[i])
+
+    if self.condition_code['z'] :
+      self.state += "Z"
+    else :
+      self.state += "-"
+    if self.condition_code['n'] :
+      self.state += "N"
+    else :
+      self.state += "-"
+    if self.condition_code['c'] :
+      self.state += "C"
+    else :
+      self.state += "-"
+    if self.condition_code['v'] :
+      self.state += "V"
+    else :
+      self.state += "-"
+
+    self.state += " {:04x}:".format(self.registers[7])
+
+    #disassemble
+    self.memory.setMode("byte")
+    (mnemonic, next_ptr) = pdp11_disassem.getMnemonic(instruction, self.memory, self.registers[7])
+    ptr = self.registers[7]
+    self.memory.setMode("word")
+    self.disassemble = ""
+    for i in range(3) :
+      if ptr + i*2 < next_ptr :
+        self.disassemble += "{:04x} ".format(self.memory[ptr+i*2])
+      else :
+        self.disassemble += "     "
+    self.disassemble += mnemonic
 
     if instruction :
       self.registers[7] += instruction['size']
@@ -303,189 +403,188 @@ class VM :
       else :
         self.operation_mode = "word"
 
-      for (key, value) in instruction['operand'].items() :
+      self.dst.operation_mode = self.operation_mode
+      self.src.operation_mode = self.operation_mode
+      self.reg.operation_mode = self.operation_mode
 
+      for (key, value) in instruction['operand'].items() :
         if key == 'o' :
           offset = pdp11_util.uint8toint8(instruction['operand']['o'])
-        if key in ['s', 'd'] :
-          if key == 's' : direction = 'src'
-          else : direction = 'dst'
+        if key == 's' :
           if (value&0x07) != 0x07 :
             if (value>>3) == 0 :
-              self.operand[direction]['addressing'] = "register"
-              self.operand[direction]['address'] = value&0x07
+              self.src.addressing = "register"
+              self.src.address = value&0x07
             elif (value>>3) == 1 :
-              self.operand[direction]['addressing'] = "register deferred"
-              self.operand[direction]['address'] = self.registers[value&0x07]
+              self.src.addressing = "register deferred"
+              self.src.address = self.registers[value&0x07]
             elif (value>>3) == 2 :
-              self.operand[direction]['addressing'] = "autoincrement"
-              self.operand[direction]['address'] = self.registers[value&0x07]
+              self.src.addressing = "autoincrement"
+              self.src.address = self.registers[value&0x07]
               if self.operation_mode == "byte" :
                 self.registers[value&0x07] += 1
               else :
                 self.registers[value&0x07] += 2
             elif (value>>3) == 3 :
-              self.operand[direction]['addressing'] = "autoincrement deferred"
-              self.operand[direction]['address'] = self.memory[self.registers[value&0x07]]
+              self.src.addressing = "autoincrement deferred"
+              self.src.address = self.memory[self.registers[value&0x07]]
               if self.operation_mode == "byte" :
                 self.registers[value&0x07] += 1
               else :
                 self.registers[value&0x07] += 2
             elif (value>>3) == 4 :
-              self.operand[direction]['addressing'] = "autodecrement"
+              self.src.addressing = "autodecrement"
               if self.operation_mode == "byte" :
                 self.registers[value&0x07] -= 1
               else :
                 self.registers[value&0x07] -= 2
-              self.operand[direction]['address'] = self.registers[value&0x07]
+              self.src.address = self.registers[value&0x07]
             elif (value>>3) == 5 :
-              self.operand[direction]['addressing'] = "autodecrement deferred"
+              self.src.addressing = "autodecrement deferred"
               if self.operation_mode == "byte" :
                 self.registers[value&0x07] -= 1
               else :
                 self.registers[value&0x07] -= 2
-              self.operand[direction]['address'] = self.memory[self.registers[value&0x07]]
+              self.src.address = self.memory[self.registers[value&0x07]]
             elif (value>>3) == 6 :
-              self.operand[direction]['addressing'] = "index"
+              self.src.addressing = "index"
               disp = pdp11_util.uint16toint16(self.memory[self.registers[7]])
-              self.operand[direction]['address'] = self.registers[value&0x07] + disp
+              self.src.address = (self.registers[value&0x07] + disp)&0xffff
               self.registers[7] += 2
             elif (value>>3) == 7 :
-              self.operand[direction]['addressing'] = "index deferred"
+              self.src.addressing = "index deferred"
               disp = pdp11_util.uint16toint16(self.memory[self.registers[7]])
-              self.operand[direction]['address'] = self.memory[self.registers[value&0x07] + disp]
+              self.src.address = self.memory[(self.registers[value&0x07] + disp)&0xffff]
               self.registers[7] += 2
             else :
-              pass
+              raise
           else :
-            if (value>>3) == 2 :
-              self.operand[direction]['addressing'] = "immidiate"
-              self.operand[direction]['value'] = self.memory[self.registers[7]]
+            if (value>>3) == 2 or (value>>3) == 0 :
+              self.src.addressing = "immidiate"
+              self.src.value = self.memory[self.registers[7]]
               self.registers[7] += 2
-            elif (value>>3) == 3 :
-              self.operand[direction]['addressing'] = "absolute"
-              self.operand[direction]['address'] = self.memory[self.registers[7]]
+            elif (value>>3) == 3 or (value>>3) == 1 :
+              self.src.addressing = "absolute"
+              self.src.address = self.memory[self.registers[7]]
               self.registers[7] += 2
-            elif (value>>3) == 6 :
-              self.operand[direction]['addressing'] = "relative"
-              self.operand[direction]['address'] = (
-                self.memory[self.registers[7]]
-                + self.registers[7] + 2)
+            elif (value>>3) == 6 or (value>>3) == 4 :
+              self.src.addressing = "relative"
+              self.src.address = (self.memory[self.registers[7]] + self.registers[7] + 2)&0xffff
               self.registers[7] += 2
-            elif (value>>3) == 7 :
-              self.operand[direction]['addressing'] = "relative indirect"
-              self.operand[direction]['address'] = (self.memory[
-                self.memory[self.registers[7]]
-                + self.registers[7] + 2])
+            elif (value>>3) == 7 or (value>>3) == 5 :
+              self.src.addressing = "relative indirect"
+              self.src.address = self.memory[(self.memory[self.registers[7]] + self.registers[7] + 2)&0xffff]
               self.registers[7] += 2
             else :
-              pass
+              raise
+        if key == 'd' :
+          if (value&0x07) != 0x07 :
+            if (value>>3) == 0 :
+              self.dst.addressing = "register"
+              self.dst.address = value&0x07
+            elif (value>>3) == 1 :
+              self.dst.addressing = "register deferred"
+              self.dst.address = self.registers[value&0x07]
+            elif (value>>3) == 2 :
+              self.dst.addressing = "autoincrement"
+              self.dst.address = self.registers[value&0x07]
+              if self.operation_mode == "byte" :
+                self.registers[value&0x07] += 1
+              else :
+                self.registers[value&0x07] += 2
+            elif (value>>3) == 3 :
+              self.dst.addressing = "autoincrement deferred"
+              self.dst.address = self.memory[self.registers[value&0x07]]
+              if self.operation_mode == "byte" :
+                self.registers[value&0x07] += 1
+              else :
+                self.registers[value&0x07] += 2
+            elif (value>>3) == 4 :
+              self.dst.addressing = "autodecrement"
+              if self.operation_mode == "byte" :
+                self.registers[value&0x07] -= 1
+              else :
+                self.registers[value&0x07] -= 2
+              self.dst.address = self.registers[value&0x07]
+            elif (value>>3) == 5 :
+              self.dst.addressing = "autodecrement deferred"
+              if self.operation_mode == "byte" :
+                self.registers[value&0x07] -= 1
+              else :
+                self.registers[value&0x07] -= 2
+              self.dst.address = self.memory[self.registers[value&0x07]]
+            elif (value>>3) == 6 :
+              self.dst.addressing = "index"
+              disp = pdp11_util.uint16toint16(self.memory[self.registers[7]])
+              self.dst.address = (self.registers[value&0x07] + disp)&0xffff
+              self.registers[7] += 2
+            elif (value>>3) == 7 :
+              self.dst.addressing = "index deferred"
+              disp = pdp11_util.uint16toint16(self.memory[self.registers[7]])
+              self.dst.address = self.memory[(self.registers[value&0x07] + disp)&0xffff]
+              self.registers[7] += 2
+            else :
+              raise
+          else :
+            if (value>>3) == 2 or (value>>3) == 0  :
+              self.dst.addressing = "immidiate"
+              self.dst.value = self.memory[self.registers[7]]
+              self.registers[7] += 2
+            elif (value>>3) == 3 or (value>>3) == 1  :
+              self.dst.addressing = "absolute"
+              self.dst.address = self.memory[self.registers[7]]
+              self.registers[7] += 2
+            elif (value>>3) == 6 or (value>>3) == 4  :
+              self.dst.addressing = "relative"
+              self.dst.address = (self.memory[self.registers[7]] + self.registers[7] + 2)&0xffff
+              self.registers[7] += 2
+            elif (value>>3) == 7 or (value>>3) == 5  :
+              self.dst.addressing = "relative indirect"
+              self.dst.address = self.memory[(self.memory[self.registers[7]] + self.registers[7] + 2)&0xffff]
+              self.registers[7] += 2
+            else :
+              raise
+        if key == 'r' :
+            self.reg.addressing = "register"
+            self.reg.address = value
 
       if instruction['opcode'] == "halt" :
-        print "not implement!"
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
       elif instruction['opcode'] == "wait" :
-        print "not implement!"
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
       elif instruction['opcode'] == "reset" :
-        print "not implement!"
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
       elif instruction['opcode'] == "nop" :
-        print "not implement!"
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
       elif instruction['opcode'] == "clr" :
-        self.setDst(0)
-
         self.condition_code['n'] = False
         self.condition_code['z'] = True
         self.condition_code['v'] = False
         self.condition_code['c'] = False
 
-      elif instruction['opcode'] == "inc" :
-        v = self.getDst()+1
-        self.setDst(v)
+        self.dst(0)
 
-        if (0xffff & v) > 0x7fff :
-          self.condition_code['n'] = True
-        else :
-          self.condition_code['n'] = False
-        if (0xffff & v) == 0 :
-          self.condition_code['z'] = True
-        else :
-          self.condition_code['z'] = False
-        if (0xffff & v) == 0x7fff :
+      elif instruction['opcode'] == "inc" :
+        self.dst += 1
+        result = self.dst()
+
+        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
+        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
+        if (0xffff & result) == 0x7fff :
           self.condition_code['v'] = True
         else :
           self.condition_code['v'] = False
 
       elif instruction['opcode'] == "dec" :
-        dst = self.getDst()
-        result = self.getDst()-1
-        self.setDst(result)
+        self.dst -= 1
+        result = self.dst()
 
-        if (result&0xffff) >= 0x8000 :
-          self.condition_code['n'] = True
-        else :
-          self.condition_code['n'] = False
-
-        if (result&0xffff) == 0 :
-          self.condition_code['z'] = True
-        else :
-          self.condition_code['z'] = False
-
-        if self.operation_mode == "byte" :
-          if (dst&0xff) == 0x80 :
-            self.condition_code['v'] = True
-          else :
-            self.condition_code['v'] = False
-        else :
-          if (dst&0xffff) == 0x8000 :
-            self.condition_code['v'] = True
-          else :
-            self.condition_code['v'] = False
-
-      elif instruction['opcode'] == "adc" :
-        print "not implement!"
-      elif instruction['opcode'] == "sbc" :
-        print "not implement!"
-      elif instruction['opcode'] == "tst" :
-        result = self.getDst()
-        self.setDst(result)
-
-        if self.operation_mode == "byte" :
-          if (result&0xff) >= 0x80 :
-            self.condition_code['n'] = True
-          else :
-            self.condition_code['n'] = False
-
-          if (result&0xff) == 0 :
-            self.condition_code['z'] = True
-          else :
-            self.condition_code['z'] = False
-        else :
-          if (result&0xffff) > 0x8000 :
-            self.condition_code['n'] = True
-          else :
-            self.condition_code['n'] = False
-
-          if (result&0xffff) == 0 :
-            self.condition_code['z'] = True
-          else :
-            self.condition_code['z'] = False
-
-        self.condition_code['v'] = False
-
-        self.condition_code['c'] = False
-
-      elif instruction['opcode'] == "neg" :
-        result = (-self.getDst())&0xffff
-        self.setDst(result)
-
-        if (result&0xffff) >= 0x8000 :
-          self.condition_code['n'] = True
-        else :
-          self.condition_code['n'] = False
-
-        if (result&0xffff) == 0 :
-          self.condition_code['z'] = True
-        else :
-          self.condition_code['z'] = False
+        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
+        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
 
         if self.operation_mode == "byte" :
           if (result&0xff) == 0x80 :
@@ -498,166 +597,248 @@ class VM :
           else :
             self.condition_code['v'] = False
 
-        if (result&0xffff) == 0 :
+      elif instruction['opcode'] == "adc" :
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
+      elif instruction['opcode'] == "sbc" :
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
+      elif instruction['opcode'] == "tst" :
+        result = self.dst()
+
+        if self.operation_mode == "byte" :
+          self.condition_code['n'] = pdp11_util.is_negative(result, 8)
+          self.condition_code['z'] = pdp11_util.is_zero(result, 8)
+        else :
+          self.condition_code['n'] = pdp11_util.is_negative(result, 16)
+          self.condition_code['z'] = pdp11_util.is_zero(result, 16)
+
+        self.condition_code['v'] = False
+
+        self.condition_code['c'] = False
+
+      elif instruction['opcode'] == "neg" :
+        result = (-self.dst())&0xffff
+
+        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
+        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
+
+        if self.operation_mode == "byte" :
+          if (result&0xff) == 0x80 :
+            self.condition_code['v'] = True
+          else :
+            self.condition_code['v'] = False
+        else :
+          if (result&0xffff) == 0x8000 :
+            self.condition_code['v'] = True
+          else :
+            self.condition_code['v'] = False
+
+        if (result&0xffff) != 0 :
           self.condition_code['c'] = True
         else :
           self.condition_code['c'] = False
+
+        self.dst(result)
 
       elif instruction['opcode'] == "com" :
-        print "not implement!"
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
       elif instruction['opcode'] == "ror" :
-        print "not implement!"
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
       elif instruction['opcode'] == "rol" :
-        print "not implement!"
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
       elif instruction['opcode'] == "asr" :
-        print "not implement!"
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
       elif instruction['opcode'] == "asl" :
-        result = (self.getDst()<<1)
-        self.setDst(result)
-      elif instruction['opcode'] == "swab" :
-        print "not implement!"
-      elif instruction['opcode'] == "sxt" :
-        print "not implement!"
-      elif instruction['opcode'] == "mul" :
-        print "not implement!"
-      elif instruction['opcode'] == "mul" :
-        print "not implement!"
-      elif instruction['opcode'] == "div" :
-        result = self.getDst()/self.getSrc()
-        
-        if (result&0xffff) >= 0x8000 :
-          self.condition_code['n'] = True
-        else :
-          self.condition_code['n'] = False
+        dst = self.dst()
+        result = dst<<1
 
-        if (result&0xffff) == 0 :
-          self.condition_code['z'] = True
-        else :
-          self.condition_code['z'] = False
+        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
+        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
 
-        if self.getSrc() == 0 :
-          self.condition_code['v'] = True
-        else :
-          self.condition_code['v'] = False
-
-        if self.getSrc() == 0 :
+        if (dst&0xffff) >= 0x8000 :
           self.condition_code['c'] = True
         else :
           self.condition_code['c'] = False
 
-      elif instruction['opcode'] == "ash" :
-        dst = self.getDst()
-        nn = pdp11_util.uint6toint6((self.getSrc()&0x3f))
-        result = pdp11_util.bitshift_uint16(dst, nn)
-        self.setDst(result)
-
-        if (result&0xffff) >= 0x8000 :
-          self.condition_code['n'] = True
-        else :
-          self.condition_code['n'] = False
-
-        if (result&0xffff) == 0 :
-          self.condition_code['z'] = True
-        else :
-          self.condition_code['z'] = False
-
-        if (result&0x8000) != (dst&0x8000) :
+        if  self.condition_code['n'] != self.condition_code['c'] :
           self.condition_code['v'] = True
         else :
           self.condition_code['v'] = False
 
-        if nn :
-          if result&0x10000 :
-            self.condition_code['c'] = True
-          else :
-            self.condition_code['c'] = False
+        self.dst(result)
+      elif instruction['opcode'] == "swab" :
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
+      elif instruction['opcode'] == "sxt" :
+        if self.condition_code['n'] :
+          result = -1
         else :
-          self.condition_code['c'] = False
+          result = 0
 
-      elif instruction['opcode'] == "ashc" :
-        print "not implement!"
-      elif instruction['opcode'] == "xor" :
-        print "not implement!"
-      elif instruction['opcode'] == "mov" :
-        result = self.getSrc()
-        if self.operation_mode == "byte" :
-          if result&0x80 :
-            result |= 0xff00
-          else :
-            result &= 0x00ff
-        self.setDst(result)
-
-        if (result&0xffff) >= 0x8000 :
-          self.condition_code['n'] = True
-        else :
-          self.condition_code['n'] = False
-
-        if (result&0xffff) == 0 :
+        if self.condition_code['n'] == False :
           self.condition_code['z'] = True
         else :
           self.condition_code['z'] = False
 
         self.condition_code['v'] = False
 
-      elif instruction['opcode'] == "add" :
-        result = self.getSrc()+self.getDst()
-        self.setDst(result)
+        self.dst(result)
 
-        if result < 0 :
+      elif instruction['opcode'] == "mul" :
+        s =  self.src()
+        if (s&0xffff) >= 0x8000 :
+          s -= 0x8000
+        result = self.reg()*s
+
+        if (result&0xffffffff) >= 0x80000000 :
           self.condition_code['n'] = True
         else :
           self.condition_code['n'] = False
+
         if result == 0 :
           self.condition_code['z'] = True
         else :
           self.condition_code['z'] = False
-        if (((0x8000 & self.getSrc()) != (0x8000 & self.getDst())) and
-            ((0x8000 & result) == (0x8000 & self.getDst()))) :
-          self.condition_code['v'] = True
-        else :
-          self.condition_code['v'] = False
-        if result < 0x10000:
+
+        self.condition_code['v'] = False
+
+        if result < -0x10000 or 0xffff <= result :
           self.condition_code['c'] = True
         else :
           self.condition_code['c'] = False
+
+        self.reg(result, dword=True)
+      elif instruction['opcode'] == "div" :
+        d =  self.reg(dword=True)
+        if (d&0xffffffff) >= 0x80000000 :
+          d -= 0x80000000
+
+        result = d/self.src()
+        result2 = d%self.src()
+        
+        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
+        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
+
+        if self.src() == 0 or result >= 0x100000000 :
+          self.condition_code['v'] = True
+        else :
+          self.condition_code['v'] = False
+
+        if self.src() == 0 :
+          self.condition_code['c'] = True
+        else :
+          self.condition_code['c'] = False
+
+        self.reg((result<<16)+result2, dword=True)
+
+      elif instruction['opcode'] == "ash" :
+        dst = self.dst()
+        nn = pdp11_util.uint6toint6((self.src()&0x3f))
+        result = pdp11_util.bitshift_uint16(dst, nn)
+
+        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
+        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
+
+        if (result&0x8000) != (dst&0x8000) :
+          self.condition_code['v'] = True
+        else :
+          self.condition_code['v'] = False
+
+        if 0 < nn :
+          if (dst>>(16-nn))&1:
+            self.condition_code['c'] = True
+          else :
+            self.condition_code['c'] = False
+        elif nn < 0 :
+          if (dst>>(abs(nn)-1))&1:
+            self.condition_code['c'] = True
+          else :
+            self.condition_code['c'] = False
+        else :
+          self.condition_code['c'] = False
+
+        self.dst(result)
+
+      elif instruction['opcode'] == "ashc" :
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
+      elif instruction['opcode'] == "xor" :
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
+      elif instruction['opcode'] == "mov" :
+        result = self.src()
+        if self.operation_mode == "byte" :
+          if result&0x80 :
+            result |= 0xff00
+          else :
+            result &= 0x00ff
+
+        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
+        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
+
+        self.condition_code['v'] = False
+
+        self.dst(result)
+
+      elif instruction['opcode'] == "add" :
+        result = self.src()+self.dst()
+
+        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
+        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
+
+        if (((0x8000 & self.src()) == (0x8000 & self.dst())) and
+            ((0x8000 & result) != (0x8000 & self.dst()))) :
+          self.condition_code['v'] = True
+        else :
+          self.condition_code['v'] = False
+
+        if result & 0x10000 :
+          self.condition_code['c'] = True
+        else :
+          self.condition_code['c'] = False
+
+        self.dst(result)
 
       elif instruction['opcode'] == "sub" :
-        result = self.getDst()-self.getSrc()
-        self.setDst(result)
+        result = self.dst()+((~self.src())&0xffff)+1
 
-        if result < 0 :
+        if (result&0xffff) >= 0x8000 :
           self.condition_code['n'] = True
         else :
           self.condition_code['n'] = False
-        if result == 0 :
+        if (result&0xffff) == 0 :
           self.condition_code['z'] = True
         else :
           self.condition_code['z'] = False
-        if (((0x8000 & self.getSrc()) != (0x8000 & self.getDst())) and
-            ((0x8000 & result) == (0x8000 & self.getDst()))) :
+        if (((0x8000 & self.src()) != (0x8000 & self.dst())) and
+            ((0x8000 & result) != (0x8000 & self.dst()))) :
           self.condition_code['v'] = True
         else :
           self.condition_code['v'] = False
-        if result > 0xffff:
+
+        if result < 0x10000 :
           self.condition_code['c'] = True
         else :
           self.condition_code['c'] = False
 
+        self.dst(result)
+
       elif instruction['opcode'] == "cmp" :
+        src = self.src()
+        dst = self.dst()
         if self.operation_mode == "byte" :
-          result = self.getSrc()+((-self.getDst())&0xff)
-          if (result&0xff) > 0x80 :
-            self.condition_code['n'] = True
-          else :
-            self.condition_code['n'] = False
+          result = src +((~dst)&0xff)+1
 
-          if (result&0xff) == 0 :
-            self.condition_code['z'] = True
-          else :
-            self.condition_code['z'] = False
+          self.condition_code['n'] = pdp11_util.is_negative(result, 8)
+          self.condition_code['z'] = pdp11_util.is_zero(result, 8)
 
-          if (((0x80 & self.getSrc()) != (0x80 & self.getDst())) and
-              ((0x80 & result) == (0x80 & self.getDst()))) :
+          if ((0x80 & src) != (0x80 & dst) and
+              (0x80 & result) == (0x80 & self.dst())) :
             self.condition_code['v'] = True
           else :
             self.condition_code['v'] = False
@@ -667,51 +848,46 @@ class VM :
           else :
             self.condition_code['c'] = False
         else :
-          result = self.getSrc()+((-self.getDst())&0xffff)
+          result = src+((~dst)&0xffff)+1
 
-          if (result&0xffff) >= 0x8000 :
-            self.condition_code['n'] = True
-          else :
-            self.condition_code['n'] = False
+          self.condition_code['n'] = pdp11_util.is_negative(result, 16)
+          self.condition_code['z'] = pdp11_util.is_zero(result, 16)
 
-          if (result&0xffff) == 0 :
-            self.condition_code['z'] = True
-          else :
-            self.condition_code['z'] = False
-
-          if (((0x8000 & self.getSrc()) != (0x8000 & self.getDst())) and
-              ((0x8000 & result) == (0x8000 & self.getDst()))) :
+          if ((0x8000 & src) != (0x8000 & dst) and
+              ((0x8000 & result) == (0x8000 & dst))) :
             self.condition_code['v'] = True
           else :
             self.condition_code['v'] = False
 
-          if result < 0x10000:
+          if result < 0x10000 :
             self.condition_code['c'] = True
           else :
             self.condition_code['c'] = False
 
       elif instruction['opcode'] == "bis" :
-        print "not implement!"
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
       elif instruction['opcode'] == "bic" :
-        result = (~self.getSrc())&self.getDst()
-        self.setDst(result)
+        result = (~self.src())&self.dst()
 
-        if (result&0x8000) >= 0x8000 :
-          self.condition_code['n'] = True
-        else :
-          self.condition_code['n'] = False
+        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
+        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
+        self.condition_code['v'] = False
 
-        if (result&0xffff) == 0 :
-          self.condition_code['z'] = True
+        self.dst(result)
+
+      elif instruction['opcode'] == "bit" :
+        result = self.src()&self.dst()
+
+        if self.operation_mode == "byte" :
+          self.condition_code['n'] = pdp11_util.is_negative(result, 8)
+          self.condition_code['z'] = pdp11_util.is_zero(result, 8)
         else :
-          self.condition_code['z'] = False
+          self.condition_code['n'] = pdp11_util.is_negative(result, 16)
+          self.condition_code['z'] = pdp11_util.is_zero(result, 16)
 
         self.condition_code['v'] = False
 
-        self.condition_code['c'] = True
-
-      elif instruction['opcode'] == "bit" :
-        print "not implement!"
       elif instruction['opcode'] == "br" :
         self.registers[7] += 2*offset
 
@@ -724,21 +900,29 @@ class VM :
           self.registers[7] += 2*offset
 
       elif instruction['opcode'] == "bpl" :
-        print "not implement!"
+        if self.condition_code['n'] == False :
+          self.registers[7] += 2*offset
+
       elif instruction['opcode'] == "bmi" :
-        print "not implement!"
-      elif instruction['opcode'] == "bmi" :
-        print "not implement!"
+        if self.condition_code['n'] == True :
+          self.registers[7] += 2*offset
+
       elif instruction['opcode'] == "bvc" :
-        print "not implement!"
+        if self.condition_code['v'] == False :
+          self.registers[7] += 2*offset
+
       elif instruction['opcode'] == "bvs" :
-        print "not implement!"
+        if self.condition_code['v'] == True :
+          self.registers[7] += 2*offset
+
       elif instruction['opcode'] == "bcc" :
         if self.condition_code['c'] == False :
           self.registers[7] += 2*offset
 
       elif instruction['opcode'] == "bcs" :
-        print "not implement!"
+        if self.condition_code['c'] == True :
+          self.registers[7] += 2*offset
+
       elif instruction['opcode'] == "bge" :
         if ( (self.condition_code['n'] != self.condition_code['v']) == False) :
           self.registers[7] += 2*offset
@@ -763,23 +947,26 @@ class VM :
           self.registers[7] += 2*offset
 
       elif instruction['opcode'] == "blos" :
-        print "not implement!"
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
+
       elif instruction['opcode'] == "jmp" :
-        addr = self.operand['dst']['address']
+        addr = self.dst.addr()
         self.registers[7] = addr
 
       elif instruction['opcode'] == "sob" :
-        result = self.registers[instruction['operand']['r']]-1
-        self.registers[instruction['operand']['r']] = result
-        addr = self.operand['dst']['address']
+        result = self.reg()-1
+        addr = self.dst.address
 
         if (result&0xffff) != 0 :
           self.registers[7] -= 2*addr
 
+        self.reg(result)
+
       elif instruction['opcode'] == "jsr" :
-        addr = self.operand['dst']['address']
+        addr = self.dst.addr()
         self.push(self.registers[instruction['operand']['r']])
-        self.registers[instruction['operand']['r']] = self.registers[7] 
+        self.reg(self.registers[7])
         self.registers[7] = addr
 
       elif instruction['opcode'] == "rts" :
@@ -787,56 +974,129 @@ class VM :
         self.registers[instruction['operand']['r']] = self.pop()
 
       elif instruction['opcode'] == "rti" :
-        print "not implement!"
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
+
       elif instruction['opcode'] == "rpt" :
-        print "not implement!"
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
+
       elif instruction['opcode'] == "iot" :
-        print "not implement!"
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
+
       elif instruction['opcode'] == "sys" :
         x = instruction['operand']['x']
         y = instruction['operand']['y']
         z = instruction['operand']['z']
-        self.sys((y<<2)+z)
+        self.sys((y<<3)+z)
 
       elif instruction['opcode'] == "rtt" :
         addr = self.pop()
         self.registers[7] = addr
 
+      elif instruction['opcode'] == "cfcc" :
+        pass
+
+      elif instruction['opcode'] == "setf" :
+        pass
+
+      elif instruction['opcode'] == "seti" :
+        pass
+
+      elif instruction['opcode'] == "setd" :
+        pass
+
+      elif instruction['opcode'] == "setl" :
+        pass
+
       else :
-        print "not implement!"
+        if self.debug : self.debug.write(instruction['opcode']+" ")
+        if self.debug : self.debug.write("not implement!\n")
+
     else :
-      self.registers[7] += 2
+      raise
 
-  def run(self, argv) :
-    argv_ = []
-    argv_ += [len(argv)&0xff, (len(argv)>>8)&0xff]
-    address = 0x10000
-    for arg in argv :
-      address -= len(arg)+1
-      argv_ += [address&0xff, (address>>8)&0xff]
-    argv_ += map(ord, '\0'.join(reversed(argv))+'\0')
+  def run(self) :
+      if self.debug :
+        self.debug.write(" r0   r1   r2   r3   r4   r5   sp  flags pc\n")
+      while True :
+        try :
+          self.step()
+        except SysExit :
+          break
+        finally :
+          if self.debug :
+            self.debug.write(self.get_state_text()+"\n")
 
-    self.memory.load(argv_, 0x10000-len(argv_))
-    self.registers[6] = 0x10000-len(argv_)
-    
-    while True :
-      self.step()
+  def load(self, args, stdin=None, stdout=None, stderr=None) :
+    self.memory.setMode("byte")
+    # initialize
+    #   registers
+    for i in range(8) :
+      self.registers[i] = 0
+    #   filedescriptors
+    if stdin is None : stdin = sys.stdin
+    if stdout is None : stdout = sys.stdout
+    if stderr is None : stderr = sys.stderr
+    self.filedescriptors = [None for x in range(0xffff)]
+    self.filedescriptors[0] = stdin
+    self.filedescriptors[1] = stdout
+    self.filedescriptors[2] = stderr
 
-  def printState(self) :
-    print("%04x,%04x,%04x,%04x,%04x,%04x,sp=%04x,pc=%04x: %s"%
-      (self.registers[0],
-       self.registers[1],
-       self.registers[2],
-       self.registers[3],
-       self.registers[4],
-       self.registers[5],
-       self.registers[6],
-       self.registers[7],
-       pdp11_disassem.getMnemonic(self.memory[:], self.registers[7])[0]))
+    # load program
+    f = open(args[0], 'rb')
+    program = map(ord, f.read())
+    self.aout = pdp11_aout.getAout(program)
+    self.memory.load(self.aout['text'] + self.aout['data'])
+    self.registers[7] = self.aout['header']['a_entry']
+
+    # set argv
+    argc = [len(args)&0xff, (len(args)>>8)&0xff]
+    address = 0x10000 - len(map(ord, '\0'.join(args)+'\0'))
+    argv = []
+    data = []
+
+    align_flag = False
+    if address%2 == 1 :
+      address -= 1
+      align_flag = True
+
+    for arg in args :
+      data += map(ord, arg+'\0')
+      argv += [address&0xff, (address>>8)&0xff]
+      address += len(arg)+1
+
+    if align_flag :
+      data += [0]
+
+    self.memory.load(argc+argv+data, 0x10000-len(argc+argv+data))
+    self.registers[6] = 0x10000-len(argc+argv+data)
+
+  def get_state_text(self) :
+    text = ""
+
+    if self.symbol :
+      text += self.symbol+":\n"
+
+    text += self.state + self.disassemble
+
+    if self.src.memory_dump : text += self.src.memory_dump
+    if self.dst.memory_dump : text += self.dst.memory_dump
+    if self.reg.memory_dump : text += self.reg.memory_dump
+
+    if self.syscall:
+      text += "\n"+self.syscall
+
+    return text
 
 if __name__ == '__main__':
   vm = VM()
-  vm.loadAout('/usr/local/v6root/bin/nm');
-  vm.run(['a.out'])
-  #vm.run(['arg1', 'arg2', 'arg3', 'arg4'])
-  #vm.run([])
+  vm.debug=sys.stderr
+  vm.load(['/usr/local/v6root/bin/nm', 'test1'],
+    sys.stdin,
+    sys.stdout,
+    sys.stderr
+  )
+  vm.run()
+
