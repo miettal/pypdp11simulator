@@ -5,6 +5,11 @@ instruction_table = {
   "[0]00001": "wait",
   "[0]00005": "reset",
   "[0]00240": "nop",
+  "[0]00277": "scc",
+  "[0]00261": "ses",
+  "[0]00270": "sen",
+  "[0]00262": "sev",
+  "[0]00264": "sez",
   "[*]050dd": "clr",
   "[*]052dd": "inc",
   "[*]053dd": "dec",
@@ -64,7 +69,7 @@ instruction_table = {
 }
 
 def searchMatchInstructionFormat(code, ptr) :
-  for (fmt, opcode) in instruction_table.items() :
+  for (fmt, opcode) in list(instruction_table.items()) :
     m = matchInstructionFormat(code, ptr, fmt)
     if m:
       return {'opcode':opcode, 'operand':m['operand'], 'size':m['size']}
@@ -82,7 +87,7 @@ def matchInstructionFormat(code, ptr, fmt) :
     elif ch == ']' :
       bit_mode = False
     elif bit_mode :
-      value = (code[ptr+bit_index/8+(-1 if (bit_index/8)%2 else 1)]>>(7-bit_index%8) & 0x01)
+      value = (code[ptr+bit_index//8+(-1 if (bit_index//8)%2 else 1)]>>(7-bit_index%8) & 0x01)
       bit_index += 1
       try :
         if int(ch) != value :
@@ -94,13 +99,13 @@ def matchInstructionFormat(code, ptr, fmt) :
         except KeyError :
           operand[ch] = value
     else :
-      value = (code[ptr+bit_index/8+(-1 if (bit_index/8)%2 else 1)]>>(7-bit_index%8) & 0x01)
+      value = (code[ptr+bit_index//8+(-1 if (bit_index//8)%2 else 1)]>>(7-bit_index%8) & 0x01)
       bit_index += 1
       value <<= 1
-      value += (code[ptr+bit_index/8+(-1 if (bit_index/8)%2 else 1)]>>(7-bit_index%8) & 0x01)
+      value += (code[ptr+bit_index//8+(-1 if (bit_index//8)%2 else 1)]>>(7-bit_index%8) & 0x01)
       bit_index += 1
       value <<= 1
-      value += (code[ptr+bit_index/8+(-1 if (bit_index/8)%2 else 1)]>>(7-bit_index%8) & 0x01)
+      value += (code[ptr+bit_index//8+(-1 if (bit_index//8)%2 else 1)]>>(7-bit_index%8) & 0x01)
       bit_index += 1
 
       try :
@@ -113,5 +118,5 @@ def matchInstructionFormat(code, ptr, fmt) :
         except KeyError :
           operand[ch] = value
             
-  return {'operand':operand, 'size':bit_index/8}
+  return {'operand':operand, 'size':bit_index//8}
 

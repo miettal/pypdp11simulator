@@ -9,7 +9,7 @@ class Registers() :
     self.mode = "word"
 
   def setMode(self, mode) :
-    assert mode == 'byte' or mode == 'word', 'mode must be "byte" or "word"'
+    assert mode == 'byte' or mode == 'word' or mode == 'dword', 'mode must be "byte" or "word", "dword"'
     self.mode = mode
 
   def __setitem__(self, index, value) :
@@ -20,16 +20,21 @@ class Registers() :
         self.registers[index] = value & 0xff
     elif self.mode == 'word' :
       self.registers[index] = value & 0xffff
+    elif self.mode == 'dword' :
+      self.registers[index] = (value >> 16) & 0xffff
+      self.registers[index+1] = value & 0xffff
     else :
-      raise AssertionError('mode must be "byte" or "word"')
+      raise AssertionError('mode must be "byte" or "word", "dword"')
 
   def __getitem__(self, index) :
     if self.mode == 'byte' :
-      return self.registers[index] & 0xff
+      return self.registers[index]
     elif self.mode == 'word' :
       return self.registers[index]
+    if self.mode == 'dword' :
+      return self.registers[index]<<16+self.registers[index+1]
     else  :
-      raise AssertionError('mode must be "byte" or "word"')
+      raise AssertionError('mode must be "byte" or "word", "dword"')
 
   def __repr__(self) :
     s = ""

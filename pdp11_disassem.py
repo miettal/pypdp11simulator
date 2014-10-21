@@ -21,9 +21,8 @@ def getMnemonic(instruction, code, ptr) :
       if byte_mode :
         mnemonic += "b"
 
-    mnemonic += " "
-
     if 's' in instruction['operand'] :
+      if op_num == 0 : mnemonic += " "
       if 1 <= op_num : mnemonic += ", "
       op_num += 1
       s = instruction['operand']['s']
@@ -67,17 +66,19 @@ def getMnemonic(instruction, code, ptr) :
           pass
 
     if 'r' in instruction['operand'] :
+      if op_num == 0 : mnemonic += " "
       if 1 <= op_num : mnemonic += ", "
       op_num += 1
       r = instruction['operand']['r']
       mnemonic += "%s"%(register_name(r))
 
     if 'd' in instruction['operand'] :
+      if op_num == 0 : mnemonic += " "
       if 1 <= op_num : mnemonic += ", "
       op_num += 1
       d = instruction['operand']['d']
       if instruction['opcode'] == "sob" :
-        mnemonic += "%d"%(d&0x07)
+        mnemonic += "%d"%d
       elif (d&0x07) == 0x07 :
         if (d>>3) == 2 :
           mnemonic += "$%x"%(((code[ptr+1]<<8)+code[ptr])&0xffff)
@@ -118,12 +119,14 @@ def getMnemonic(instruction, code, ptr) :
           pass
 
     if 'o' in instruction['operand'] :
+      if op_num == 0 : mnemonic += " "
       if 1 <= op_num : mnemonic += ", "
       op_num += 1
       offset = pdp11_util.uint8toint8(instruction['operand']['o'])
       mnemonic += "%04x"%(ptr + offset*2)
   
     if 'x' in instruction['operand'] :
+      if op_num == 0 : mnemonic += " "
       if 1 <= op_num : mnemonic += ", "
       op_num += 1
       x = instruction['operand']['x']
@@ -156,16 +159,16 @@ def printDisassembler(program) :
   while ptr < len(code) :
     next_ptr = ptr
     try :
-      print "%s:"%([k for (k, v) in aout['syms']['file_table'].items() if v['address'] == ptr][0])
+      print("%s:"%([k for (k, v) in list(aout['syms']['file_table'].items()) if v['address'] == ptr][0]))
     except IndexError:
       pass
 
     try :
-      symbols = [k for (k, v) in aout['syms']['symbol_table'].items() if v['address'] == ptr]
+      symbols = [k for (k, v) in list(aout['syms']['symbol_table'].items()) if v['address'] == ptr]
       for symbol in symbols :
-        print "%s:"%(symbol)
-        for (k, v) in aout['syms']['symbol_table'][symbol]['local_symbol_table'].items() :
-          print("  %s(r5):%s"%(oct(v['address'])[1:], k))
+        print("%s:"%(symbol))
+        for (k, v) in list(aout['syms']['symbol_table'][symbol]['local_symbol_table'].items()) :
+          print(("  %s(r5):%s"%(oct(v['address'])[1:], k)))
     except IndexError:
       pass
 
@@ -173,7 +176,7 @@ def printDisassembler(program) :
     disassem = d[0]
     next_ptr = d[1]
     
-    print disassem
+    print(disassem)
 
     ptr = next_ptr
 
@@ -187,6 +190,6 @@ def register_name(n) :
 
 if __name__ == '__main__':
   f = open('a.out', 'rb')
-  program = map(ord, f.read())
+  program = list(map(ord, f.read()))
   printDisassembler(program)
 

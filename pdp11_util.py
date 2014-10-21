@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import uuid
 
 def uint6toint6(n) :
   if n >= 0x20: n -= 0x40
@@ -21,9 +22,32 @@ def bitshift_uint16(n, b) :
     else :
       return (n>>abs(b))&0xffff
 
+def bitshift_uint32(n, b) :
+  if 0 <= b :
+    return (n<<b)&0xffffffff
+  else :
+    if is_negative(n, 32) :
+      return (n>>abs(b))&0xffffffff|(((1<<abs(b))-1)<<(32-abs(b)))
+    else :
+      return (n>>abs(b))&0xffffffff
+
 def is_negative(n, b) :
   return bool(n&(1<<(b-1)))
 
 def is_zero(n, b) :
   return (n&((1<<b)-1)) == 0
 
+def addr2str(memory, addr) :
+  s = ""
+  while memory[addr:"byte"] :
+    s += chr(memory[addr:"byte"])
+    addr += 1
+  return s
+
+def chpath(path) :
+  v6root = "/usr/local/v6root/"
+  #print path[:len("/lib")]
+  if path[:len("/lib")] == "/lib" :
+    path = v6root+path
+
+  return path

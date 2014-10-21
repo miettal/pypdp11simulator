@@ -15,7 +15,13 @@ class Memory() :
 
   def __setitem__(self, index, value) :
     if isinstance(index, slice) :
-      self.memory.__setitem__(index, value)
+      if isinstance(index.stop, str) :
+        mode = self.mode
+        self.setMode(index.stop)
+        self[index.start] = value
+        self.setMode(mode)
+      else :
+        self.memory.__setitem__(index, value)
     else :
       if self.mode == 'byte' :
         self.memory[index&0xffff] = value&0xff
@@ -27,7 +33,14 @@ class Memory() :
 
   def __getitem__(self, index) :
     if isinstance(index, slice) :
-      return self.memory.__getitem__(index)
+      if isinstance(index.stop, str) :
+        mode = self.mode
+        self.setMode(index.stop)
+        value = self[index.start]
+        self.setMode(mode)
+        return value
+      else :
+        return self.memory.__getitem__(index)
     else :
       if self.mode == 'byte' :
         return self.memory[index&0xffff]
