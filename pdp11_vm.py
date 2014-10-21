@@ -8,7 +8,7 @@ import six
 import pdp11_aout
 import pdp11_decode
 import pdp11_disassem
-import pdp11_registers
+import pdp11_register
 import pdp11_memory
 import pdp11_operand
 import pdp11_util
@@ -24,17 +24,12 @@ class VM :
     self.aout = ""
 
     self.memory = pdp11_memory.Memory()
-    self.registers = pdp11_registers.Registers()
-    self.condition_code = {'n':False,
-                           'z':False,
-                           'v':False,
-                           'c':False,
-    }
+    self.register = pdp11_register.Register()
     self.operation_mode = None
 
-    self.dst = pdp11_operand.Operand(self.memory, self.registers)
-    self.src = pdp11_operand.Operand(self.memory, self.registers)
-    self.reg = pdp11_operand.Operand(self.memory, self.registers)
+    self.dst = pdp11_operand.Operand(self.memory, self.register)
+    self.src = pdp11_operand.Operand(self.memory, self.register)
+    self.reg = pdp11_operand.Operand(self.memory, self.register)
 
     # unixv6
     self.sighandler = 0
@@ -50,30 +45,30 @@ class VM :
     self.syscall = ""
 
   def push(self, value) :
-    self.registers[6] -= 2
-    self.memory[self.registers[6]] = value
+    self.register[6] -= 2
+    self.memory[self.register[6]] = value
 
   def pop(self) :
-    value = self.memory[self.registers[6]]
-    self.registers[6] += 2
+    value = self.memory[self.register[6]]
+    self.register[6] += 2
     return value
 
   def sys(self, num) :
     if num == 0 : #indir
-      pc = self.registers[7]
+      pc = self.register[7]
       disassemble = self.disassemble
       state = self.state
 
-      self.registers[7] = self.memory[self.registers[7]]
+      self.register[7] = self.memory[self.register[7]]
       self.step()
 
-      self.registers[7] = pc
-      self.registers[7] += 2
+      self.register[7] = pc
+      self.register[7] += 2
       self.disassemble = disassemble
       self.state = state
 
     elif num == 1 : #exit
-      info = pdp11_util.uint16toint16(self.registers[0])
+      info = pdp11_util.uint16toint16(self.register[0])
 
       self.syscall = '<exit({:d})>'.format(info)
 
@@ -83,46 +78,46 @@ class VM :
       self.syscall = "not implement(syscall {:x})".format(num)
 
     elif num == 3 : #read
-      fd = self.registers[0]
-      addr = self.memory[self.registers[7]]
-      size = self.memory[self.registers[7]+2]
+      fd = self.register[0]
+      addr = self.memory[self.register[7]]
+      size = self.memory[self.register[7]+2]
       data = list(os.read(fd, size))
       if six.PY2 : data = map(ord, data)
 
       self.memory[addr:addr+len(data)] = data
-      self.registers[0] = len(data)
-      self.registers[7] += 4
-      self.condition_code['c'] = False
+      self.register[0] = len(data)
+      self.register[7] += 4
+      self.register.c = False
 
-      self.syscall = '<read({:d}, 0x{:04x}, {:d}) => {:d}>'.format(fd, addr, size, self.registers[0])
+      self.syscall = '<read({:d}, 0x{:04x}, {:d}) => {:d}>'.format(fd, addr, size, self.register[0])
 
     elif num == 4 : #write
-      fd = self.registers[0]
-      addr = self.memory[self.registers[7]]
-      size = self.memory[self.registers[7]+2]
+      fd = self.register[0]
+      addr = self.memory[self.register[7]]
+      size = self.memory[self.register[7]+2]
 
       os.write(fd, ''.join(map(chr, self.memory[addr:addr+size])))
-      self.registers[0] = size
-      self.registers[7] += 4
-      self.condition_code['c'] = False
+      self.register[0] = size
+      self.register[7] += 4
+      self.register.c = False
 
-      self.syscall = '<write({:d}, 0x{:04x}, {:d}) => {:d}>'.format(fd, addr, size, self.registers[0])
+      self.syscall = '<write({:d}, 0x{:04x}, {:d}) => {:d}>'.format(fd, addr, size, self.register[0])
 
     elif num == 5 : #open
-      filepath = pdp11_util.addr2str(self.memory, self.memory[self.registers[7]])
-      mode = self.memory[self.registers[7]+2]
+      filepath = pdp11_util.addr2str(self.memory, self.memory[self.register[7]])
+      mode = self.memory[self.register[7]+2]
 
       fd = os.open(pdp11_util.chpath(filepath), mode)
-      self.registers[0] = fd
-      self.registers[7] += 4
+      self.register[0] = fd
+      self.register[7] += 4
 
-      self.syscall = '<open("{}", {}) => {}>'.format(filepath, mode, self.registers[0])
+      self.syscall = '<open("{}", {}) => {}>'.format(filepath, mode, self.register[0])
 
     elif num == 6 : #close
-      fd = self.registers[0]
+      fd = self.register[0]
 
       os.close(fd)
-      self.registers[0] = 0
+      self.register[0] = 0
 
       self.syscall = '<close({}) => {}>'.format(fd, 0)
 
@@ -130,40 +125,40 @@ class VM :
       self.syscall = "not implement(syscall {:x})".format(num)
 
     elif num == 8 : #creat
-      filepath = pdp11_util.addr2str(self.memory, self.memory[self.registers[7]])
-      mode = self.memory[self.registers[7]+2]
+      filepath = pdp11_util.addr2str(self.memory, self.memory[self.register[7]])
+      mode = self.memory[self.register[7]+2]
 
       fd = os.open(pdp11_util.chpath(filepath),
         os.O_CREAT | os.O_TRUNC | os.O_WRONLY, mode)
-      self.registers[0] = fd
-      self.condition_code['c'] = False
-      self.registers[7] += 4
+      self.register[0] = fd
+      self.register.c = False
+      self.register[7] += 4
 
       self.syscall = '<creat("{:s}", {:04o}) => {}>'.format(filepath, mode, fd)
 
     elif num == 9 :
       self.syscall = "not implement(syscall {:x})".format(num)
     elif num == 10 : #unlink
-      filepath = pdp11_util.addr2str(self.memory, self.memory[self.registers[7]])
+      filepath = pdp11_util.addr2str(self.memory, self.memory[self.register[7]])
 
       try :
         os.unlink(pdp11_util.chpath(filepath))
         result = 0
-        self.registers[0] = 0
-        self.condition_code['c'] = False
+        self.register[0] = 0
+        self.register.c = False
       except OSError :
         result = -1
-        self.registers[0] = 2
-        self.condition_code['c'] = True
+        self.register[0] = 2
+        self.register.c = True
 
-      self.registers[7] += 2
+      self.register[7] += 2
 
       self.syscall = '<unlink("{:s}") => {}>'.format(filepath, result)
 
     elif num == 11 : #exec
-      filepath = pdp11_util.addr2str(self.memory, self.memory[self.registers[7]])
+      filepath = pdp11_util.addr2str(self.memory, self.memory[self.register[7]])
       i = 0
-      argp = self.memory[self.registers[7]+2]
+      argp = self.memory[self.register[7]+2]
       args = []
       while self.memory[argp+i*2] != 0:
         p = self.memory[argp+i*2]
@@ -183,31 +178,31 @@ class VM :
     elif num == 14 :
       self.syscall = "not implement(syscall {:x})".format(num)
     elif num == 15 :
-      filepath = pdp11_util.addr2str(self.memory, self.memory[self.registers[7]])
-      mode = self.memory[self.registers[7]+2]
+      filepath = pdp11_util.addr2str(self.memory, self.memory[self.register[7]])
+      mode = self.memory[self.register[7]+2]
 
       os.chmod(filepath, mode)
-      self.registers[0] = 0
-      self.registers[7] += 4
+      self.register[0] = 0
+      self.register[7] += 4
 
       self.syscall = '<chmod("{:s}", 0{:03o}) => {}>'.format(filepath, mode, 0)
     elif num == 16 :
       self.syscall = "not implement(syscall {:x})".format(num)
 
     elif num == 17 : #brk
-      addr = self.memory[self.registers[7]]
+      addr = self.memory[self.register[7]]
 
-      self.registers[0] = 0
+      self.register[0] = 0
 
       self.syscall = '<brk(0x{:04x}) => {}>'.format(addr, 0)
     elif num == 18 : #stat
-      filepath = pdp11_util.addr2str(self.memory, self.memory[self.registers[7]])
-      addr = self.memory[self.registers[7]+2]
+      filepath = pdp11_util.addr2str(self.memory, self.memory[self.register[7]])
+      addr = self.memory[self.register[7]+2]
 
       try :
         result = 0
         stat = os.stat(pdp11_util.chpath(filepath))
-        self.registers[0] = result
+        self.register[0] = result
         self.memory[addr:"word"] = stat.st_dev
         self.memory[addr+2:"word"] = stat.st_ino
         self.memory[addr+4:"word"] = stat.st_mode
@@ -220,26 +215,26 @@ class VM :
         self.memory[addr+30:"word"] = int(stat.st_atime)
         self.memory[addr+32:"word"] = int(stat.st_mtime) >> 16
         self.memory[addr+34:"word"] = int(stat.st_mtime)
-        self.registers[0] = 0
-        self.condition_code['c'] = False
+        self.register[0] = 0
+        self.register.c = False
       except OSError:
         result = -1
-        self.registers[0] = 2
-        self.condition_code['c'] = True
+        self.register[0] = 2
+        self.register.c = True
 
-      self.registers[7] += 4
+      self.register[7] += 4
 
       self.syscall = '<stat("{:s}", 0x{:04x}) => {}>'.format(filepath, addr, result)
     elif num == 19 : #lseek
-      fd = self.registers[0]
-      offset = self.memory[self.registers[7]]
-      whence = self.memory[self.registers[7]+2]
+      fd = self.register[0]
+      offset = self.memory[self.register[7]]
+      whence = self.memory[self.register[7]+2]
 
-      self.registers[0] = os.lseek(fd, offset, whence)
-      self.registers[7] += 4
-      self.condition_code['c'] = False
+      self.register[0] = os.lseek(fd, offset, whence)
+      self.register[7] += 4
+      self.register.c = False
 
-      self.syscall = '<lseek({}, {}, {}) => {}>'.format(fd, offset, whence, self.registers[0])
+      self.syscall = '<lseek({}, {}, {}) => {}>'.format(fd, offset, whence, self.register[0])
 
     elif num == 20 :
       self.syscall = "not implement(syscall {:x})".format(num)
@@ -284,10 +279,10 @@ class VM :
     elif num == 40 :
       self.syscall = "not implement(syscall {:x})".format(num)
     elif num == 41 :
-      fd = self.registers[0]
+      fd = self.register[0]
 
       fd = os.dup(fd)
-      self.registers[0] = fd
+      self.register[0] = fd
 
       self.syscall = '<dup({}) => {}>'.format(fd, i)
 
@@ -304,13 +299,13 @@ class VM :
     elif num == 47 :
       self.syscall = "not implement(syscall {:x})".format(num)
     elif num == 48 :
-      signum = self.memory[self.registers[7]]
-      sighandler = self.memory[self.registers[7]+2]
+      signum = self.memory[self.register[7]]
+      sighandler = self.memory[self.register[7]+2]
       old_sighandler = self.sighandler
       self.sighandler = sighandler
 
-      self.registers[7] += 4
-      self.registers[0] = old_sighandler
+      self.register[7] += 4
+      self.register[0] = old_sighandler
 
       self.syscall = '<signal({}, 0x{:04x})>'.format(signum, sighandler)
 
@@ -348,7 +343,7 @@ class VM :
       pass
 
   def step(self) :
-    instruction = pdp11_decode.searchMatchInstructionFormat(self.memory, self.registers[7])
+    instruction = pdp11_decode.searchMatchInstructionFormat(self.memory, self.register[7])
 
     self.symbol = ""
     self.state = ""
@@ -360,36 +355,36 @@ class VM :
 
     #symbol
     for (k, v) in list(self.aout['syms']['symbol_table'].items()) :
-      if v['address'] == self.registers[7] and k[0] != '~' :
+      if v['address'] == self.register[7] and k[0] != '~' :
         self.symbol = k
 
     #state
     for i in range(7) :
-      self.state += "{:04x} ".format(self.registers[i])
+      self.state += "{:04x} ".format(self.register[i])
 
-    if self.condition_code['z'] :
+    if self.register.z :
       self.state += "Z"
     else :
       self.state += "-"
-    if self.condition_code['n'] :
+    if self.register.n :
       self.state += "N"
     else :
       self.state += "-"
-    if self.condition_code['c'] :
+    if self.register.c :
       self.state += "C"
     else :
       self.state += "-"
-    if self.condition_code['v'] :
+    if self.register.v :
       self.state += "V"
     else :
       self.state += "-"
 
-    self.state += " {:04x}:".format(self.registers[7])
+    self.state += " {:04x}:".format(self.register[7])
 
     #disassemble
     self.memory.setMode("byte")
-    (mnemonic, next_ptr) = pdp11_disassem.getMnemonic(instruction, self.memory, self.registers[7])
-    ptr = self.registers[7]
+    (mnemonic, next_ptr) = pdp11_disassem.getMnemonic(instruction, self.memory, self.register[7])
+    ptr = self.register[7]
     self.memory.setMode("word")
     self.disassemble = ""
     for i in range(3) :
@@ -400,7 +395,7 @@ class VM :
     self.disassemble += mnemonic
 
     if instruction :
-      self.registers[7] += instruction['size']
+      self.register[7] += instruction['size']
 
       self.operation_mode = "word"
       if '*' in instruction['operand'] :
@@ -427,64 +422,64 @@ class VM :
               self.src.address = value&0x07
             elif (value>>3) == 1 :
               self.src.addressing = "register deferred"
-              self.src.address = self.registers[value&0x07]
+              self.src.address = self.register[value&0x07]
             elif (value>>3) == 2 :
               self.src.addressing = "autoincrement"
-              self.src.address = self.registers[value&0x07]
+              self.src.address = self.register[value&0x07]
               if self.operation_mode == "byte" :
-                self.registers[value&0x07] += 1
+                self.register[value&0x07] += 1
               else :
-                self.registers[value&0x07] += 2
+                self.register[value&0x07] += 2
             elif (value>>3) == 3 :
               self.src.addressing = "autoincrement deferred"
-              self.src.address = self.memory[self.registers[value&0x07]]
+              self.src.address = self.memory[self.register[value&0x07]]
               if self.operation_mode == "byte" :
-                self.registers[value&0x07] += 1
+                self.register[value&0x07] += 1
               else :
-                self.registers[value&0x07] += 2
+                self.register[value&0x07] += 2
             elif (value>>3) == 4 :
               self.src.addressing = "autodecrement"
               if self.operation_mode == "byte" :
-                self.registers[value&0x07] -= 1
+                self.register[value&0x07] -= 1
               else :
-                self.registers[value&0x07] -= 2
-              self.src.address = self.registers[value&0x07]
+                self.register[value&0x07] -= 2
+              self.src.address = self.register[value&0x07]
             elif (value>>3) == 5 :
               self.src.addressing = "autodecrement deferred"
               if self.operation_mode == "byte" :
-                self.registers[value&0x07] -= 1
+                self.register[value&0x07] -= 1
               else :
-                self.registers[value&0x07] -= 2
-              self.src.address = self.memory[self.registers[value&0x07]]
+                self.register[value&0x07] -= 2
+              self.src.address = self.memory[self.register[value&0x07]]
             elif (value>>3) == 6 :
               self.src.addressing = "index"
-              disp = pdp11_util.uint16toint16(self.memory[self.registers[7]])
-              self.src.address = (self.registers[value&0x07] + disp)&0xffff
-              self.registers[7] += 2
+              disp = pdp11_util.uint16toint16(self.memory[self.register[7]])
+              self.src.address = (self.register[value&0x07] + disp)&0xffff
+              self.register[7] += 2
             elif (value>>3) == 7 :
               self.src.addressing = "index deferred"
-              disp = pdp11_util.uint16toint16(self.memory[self.registers[7]])
-              self.src.address = self.memory[(self.registers[value&0x07] + disp)&0xffff]
-              self.registers[7] += 2
+              disp = pdp11_util.uint16toint16(self.memory[self.register[7]])
+              self.src.address = self.memory[(self.register[value&0x07] + disp)&0xffff]
+              self.register[7] += 2
             else :
               raise
           else :
             if (value>>3) == 2 or (value>>3) == 0 :
               self.src.addressing = "immidiate"
-              self.src.value = self.memory[self.registers[7]]
-              self.registers[7] += 2
+              self.src.value = self.memory[self.register[7]]
+              self.register[7] += 2
             elif (value>>3) == 3 or (value>>3) == 1 :
               self.src.addressing = "absolute"
-              self.src.address = self.memory[self.registers[7]]
-              self.registers[7] += 2
+              self.src.address = self.memory[self.register[7]]
+              self.register[7] += 2
             elif (value>>3) == 6 or (value>>3) == 4 :
               self.src.addressing = "relative"
-              self.src.address = (self.memory[self.registers[7]] + self.registers[7] + 2)&0xffff
-              self.registers[7] += 2
+              self.src.address = (self.memory[self.register[7]] + self.register[7] + 2)&0xffff
+              self.register[7] += 2
             elif (value>>3) == 7 or (value>>3) == 5 :
               self.src.addressing = "relative indirect"
-              self.src.address = self.memory[(self.memory[self.registers[7]] + self.registers[7] + 2)&0xffff]
-              self.registers[7] += 2
+              self.src.address = self.memory[(self.memory[self.register[7]] + self.register[7] + 2)&0xffff]
+              self.register[7] += 2
             else :
               raise
         if key == 'd' :
@@ -495,64 +490,64 @@ class VM :
               self.dst.address = value&0x07
             elif (value>>3) == 1 :
               self.dst.addressing = "register deferred"
-              self.dst.address = self.registers[value&0x07]
+              self.dst.address = self.register[value&0x07]
             elif (value>>3) == 2 :
               self.dst.addressing = "autoincrement"
-              self.dst.address = self.registers[value&0x07]
+              self.dst.address = self.register[value&0x07]
               if self.operation_mode == "byte" :
-                self.registers[value&0x07] += 1
+                self.register[value&0x07] += 1
               else :
-                self.registers[value&0x07] += 2
+                self.register[value&0x07] += 2
             elif (value>>3) == 3 :
               self.dst.addressing = "autoincrement deferred"
-              self.dst.address = self.memory[self.registers[value&0x07]]
+              self.dst.address = self.memory[self.register[value&0x07]]
               if self.operation_mode == "byte" :
-                self.registers[value&0x07] += 1
+                self.register[value&0x07] += 1
               else :
-                self.registers[value&0x07] += 2
+                self.register[value&0x07] += 2
             elif (value>>3) == 4 :
               self.dst.addressing = "autodecrement"
               if self.operation_mode == "byte" :
-                self.registers[value&0x07] -= 1
+                self.register[value&0x07] -= 1
               else :
-                self.registers[value&0x07] -= 2
-              self.dst.address = self.registers[value&0x07]
+                self.register[value&0x07] -= 2
+              self.dst.address = self.register[value&0x07]
             elif (value>>3) == 5 :
               self.dst.addressing = "autodecrement deferred"
               if self.operation_mode == "byte" :
-                self.registers[value&0x07] -= 1
+                self.register[value&0x07] -= 1
               else :
-                self.registers[value&0x07] -= 2
-              self.dst.address = self.memory[self.registers[value&0x07]]
+                self.register[value&0x07] -= 2
+              self.dst.address = self.memory[self.register[value&0x07]]
             elif (value>>3) == 6 :
               self.dst.addressing = "index"
-              disp = pdp11_util.uint16toint16(self.memory[self.registers[7]])
-              self.dst.address = (self.registers[value&0x07] + disp)&0xffff
-              self.registers[7] += 2
+              disp = pdp11_util.uint16toint16(self.memory[self.register[7]])
+              self.dst.address = (self.register[value&0x07] + disp)&0xffff
+              self.register[7] += 2
             elif (value>>3) == 7 :
               self.dst.addressing = "index deferred"
-              disp = pdp11_util.uint16toint16(self.memory[self.registers[7]])
-              self.dst.address = self.memory[(self.registers[value&0x07] + disp)&0xffff]
-              self.registers[7] += 2
+              disp = pdp11_util.uint16toint16(self.memory[self.register[7]])
+              self.dst.address = self.memory[(self.register[value&0x07] + disp)&0xffff]
+              self.register[7] += 2
             else :
               raise
           else :
             if (value>>3) == 2 or (value>>3) == 0  :
               self.dst.addressing = "immidiate"
-              self.dst.value = self.memory[self.registers[7]]
-              self.registers[7] += 2
+              self.dst.value = self.memory[self.register[7]]
+              self.register[7] += 2
             elif (value>>3) == 3 or (value>>3) == 1  :
               self.dst.addressing = "absolute"
-              self.dst.address = self.memory[self.registers[7]]
-              self.registers[7] += 2
+              self.dst.address = self.memory[self.register[7]]
+              self.register[7] += 2
             elif (value>>3) == 6 or (value>>3) == 4  :
               self.dst.addressing = "relative"
-              self.dst.address = (self.memory[self.registers[7]] + self.registers[7] + 2)&0xffff
-              self.registers[7] += 2
+              self.dst.address = (self.memory[self.register[7]] + self.register[7] + 2)&0xffff
+              self.register[7] += 2
             elif (value>>3) == 7 or (value>>3) == 5  :
               self.dst.addressing = "relative indirect"
-              self.dst.address = self.memory[(self.memory[self.registers[7]] + self.registers[7] + 2)&0xffff]
-              self.registers[7] += 2
+              self.dst.address = self.memory[(self.memory[self.register[7]] + self.register[7] + 2)&0xffff]
+              self.register[7] += 2
             else :
               raise
         if key == 'r' :
@@ -576,22 +571,22 @@ class VM :
         if self.debug : self.debug.write(instruction['opcode']+" ")
         if self.debug : self.debug.write("not implement!\n")
       elif instruction['opcode'] == "sen" :
-        self.condition_code['n'] = True
+        self.register.n = True
 
       elif instruction['opcode'] == "ses" :
-        self.condition_code['c'] = True
+        self.register.c = True
 
       elif instruction['opcode'] == "sev" :
-        self.condition_code['v'] = True
+        self.register.v = True
 
       elif instruction['opcode'] == "sez" :
-        self.condition_code['z'] = True
+        self.register.z = True
 
       elif instruction['opcode'] == "clr" :
-        self.condition_code['n'] = False
-        self.condition_code['z'] = True
-        self.condition_code['v'] = False
-        self.condition_code['c'] = False
+        self.register.n = False
+        self.register.z = True
+        self.register.v = False
+        self.register.c = False
 
         self.dst(0)
 
@@ -599,35 +594,35 @@ class VM :
         self.dst += 1
         result = self.dst()
 
-        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-        self.condition_code['v'] = (0xffff & result) == 0x7fff
+        self.register.n = pdp11_util.is_negative(result, 16)
+        self.register.z = pdp11_util.is_zero(result, 16)
+        self.register.v = (0xffff & result) == 0x7fff
 
       elif instruction['opcode'] == "dec" :
         self.dst -= 1
         result = self.dst()
 
-        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
+        self.register.n = pdp11_util.is_negative(result, 16)
+        self.register.z = pdp11_util.is_zero(result, 16)
 
         if self.operation_mode == "byte" :
-          self.condition_code['v'] = (result&0xff) == 0x80
+          self.register.v = (result&0xff) == 0x80
         else :
-          self.condition_code['v'] = (result&0xffff) == 0x8000
+          self.register.v = (result&0xffff) == 0x8000
 
       elif instruction['opcode'] == "adc" :
         dst = self.dst()
-        result = dst+self.condition_code['c']
+        result = dst+self.register.c
 
         if self.operation_mode == "byte" :
-          self.condition_code['n'] = pdp11_util.is_negative(result, 8)
-          self.condition_code['z'] = pdp11_util.is_zero(result, 8)
+          self.register.n = pdp11_util.is_negative(result, 8)
+          self.register.z = pdp11_util.is_zero(result, 8)
         else :
-          self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-          self.condition_code['z'] = pdp11_util.is_zero(result, 16)
+          self.register.n = pdp11_util.is_negative(result, 16)
+          self.register.z = pdp11_util.is_zero(result, 16)
 
-        self.condition_code['v'] = (dst == 0x8000) and self.condition_code['c']
-        self.condition_code['c'] = (dst == -1) and self.condition_code['c']
+        self.register.v = (dst == 0x8000) and self.register.c
+        self.register.c = (dst == -1) and self.register.c
 
         self.dst(result)
 
@@ -638,37 +633,37 @@ class VM :
         result = self.dst()
 
         if self.operation_mode == "byte" :
-          self.condition_code['n'] = pdp11_util.is_negative(result, 8)
-          self.condition_code['z'] = pdp11_util.is_zero(result, 8)
+          self.register.n = pdp11_util.is_negative(result, 8)
+          self.register.z = pdp11_util.is_zero(result, 8)
         else :
-          self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-          self.condition_code['z'] = pdp11_util.is_zero(result, 16)
+          self.register.n = pdp11_util.is_negative(result, 16)
+          self.register.z = pdp11_util.is_zero(result, 16)
 
-        self.condition_code['v'] = False
-        self.condition_code['c'] = False
+        self.register.v = False
+        self.register.c = False
 
       elif instruction['opcode'] == "neg" :
         result = (-self.dst())&0xffff
 
-        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
+        self.register.n = pdp11_util.is_negative(result, 16)
+        self.register.z = pdp11_util.is_zero(result, 16)
 
         if self.operation_mode == "byte" :
-          self.condition_code['v'] = (result&0xff) == 0x80
+          self.register.v = (result&0xff) == 0x80
         else :
-          self.condition_code['v'] = (result&0xffff) == 0x8000
+          self.register.v = (result&0xffff) == 0x8000
 
-        self.condition_code['c'] = (result&0xffff) != 0
+        self.register.c = (result&0xffff) != 0
 
         self.dst(result)
 
       elif instruction['opcode'] == "com" :
         result = ~self.dst()
 
-        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-        self.condition_code['v'] = False
-        self.condition_code['c'] = True
+        self.register.n = pdp11_util.is_negative(result, 16)
+        self.register.z = pdp11_util.is_zero(result, 16)
+        self.register.v = False
+        self.register.c = True
 
         self.dst(result)
 
@@ -677,15 +672,15 @@ class VM :
         result = dst>>1
 
         if self.operation_mode == "byte" :
-          self.condition_code['n'] = pdp11_util.is_negative(result, 8)
-          self.condition_code['z'] = pdp11_util.is_zero(result, 8)
-          self.condition_code['c'] = bool(dst&1)
-          self.condition_code['v'] = self.condition_code['n'] != self.condition_code['c']
+          self.register.n = pdp11_util.is_negative(result, 8)
+          self.register.z = pdp11_util.is_zero(result, 8)
+          self.register.c = bool(dst&1)
+          self.register.v = self.register.n != self.register.c
         else :
-          self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-          self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-          self.condition_code['c'] = bool(dst&1)
-          self.condition_code['v'] = self.condition_code['n'] != self.condition_code['c']
+          self.register.n = pdp11_util.is_negative(result, 16)
+          self.register.z = pdp11_util.is_zero(result, 16)
+          self.register.c = bool(dst&1)
+          self.register.v = self.register.n != self.register.c
 
         self.dst(result)
 
@@ -694,15 +689,15 @@ class VM :
         result = dst<<1
 
         if self.operation_mode == "byte" :
-          self.condition_code['n'] = pdp11_util.is_negative(result, 8)
-          self.condition_code['z'] = pdp11_util.is_zero(result, 8)
-          self.condition_code['c'] = bool(dst&(1<<8))
-          self.condition_code['v'] = self.condition_code['n'] != self.condition_code['c']
+          self.register.n = pdp11_util.is_negative(result, 8)
+          self.register.z = pdp11_util.is_zero(result, 8)
+          self.register.c = bool(dst&(1<<8))
+          self.register.v = self.register.n != self.register.c
         else :
-          self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-          self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-          self.condition_code['c'] = bool(dst&(1<<16))
-          self.condition_code['v'] = self.condition_code['n'] != self.condition_code['c']
+          self.register.n = pdp11_util.is_negative(result, 16)
+          self.register.z = pdp11_util.is_zero(result, 16)
+          self.register.c = bool(dst&(1<<16))
+          self.register.v = self.register.n != self.register.c
 
         self.dst(result)
 
@@ -711,20 +706,20 @@ class VM :
         dst = self.dst()
         result = dst>>1
 
-        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-        self.condition_code['c'] = bool(dst&0x1)
-        self.condition_code['v'] = self.condition_code['n'] != self.condition_code['c']
+        self.register.n = pdp11_util.is_negative(result, 16)
+        self.register.z = pdp11_util.is_zero(result, 16)
+        self.register.c = bool(dst&0x1)
+        self.register.v = self.register.n != self.register.c
 
         self.dst(result)
       elif instruction['opcode'] == "asl" :
         dst = self.dst()
         result = dst<<1
 
-        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-        self.condition_code['c'] = (dst&0xffff) >= 0x8000
-        self.condition_code['v'] = self.condition_code['n'] != self.condition_code['c']
+        self.register.n = pdp11_util.is_negative(result, 16)
+        self.register.z = pdp11_util.is_zero(result, 16)
+        self.register.c = (dst&0xffff) >= 0x8000
+        self.register.v = self.register.n != self.register.c
 
         self.dst(result)
 
@@ -734,20 +729,20 @@ class VM :
         dst_l = self.dst()&0xff
         result = (dst_l<<8) + dst_h
 
-        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-        self.condition_code['v'] = False
-        self.condition_code['c'] = False
+        self.register.n = pdp11_util.is_negative(result, 16)
+        self.register.z = pdp11_util.is_zero(result, 16)
+        self.register.v = False
+        self.register.c = False
 
         self.dst(result)
       elif instruction['opcode'] == "sxt" :
-        if self.condition_code['n'] :
+        if self.register.n :
           result = -1
         else :
           result = 0
 
-        self.condition_code['z'] = self.condition_code['n'] == False
-        self.condition_code['v'] = False
+        self.register.z = self.register.n == False
+        self.register.v = False
 
         self.dst(result)
 
@@ -757,10 +752,10 @@ class VM :
           s -= 0x8000
         result = self.reg()*s
 
-        self.condition_code['n'] = (result&0xffffffff) >= 0x80000000
-        self.condition_code['z'] = result == 0
-        self.condition_code['v'] = False
-        self.condition_code['c'] = result < -0x8000 or 0x7fff <= result
+        self.register.n = (result&0xffffffff) >= 0x80000000
+        self.register.z = result == 0
+        self.register.v = False
+        self.register.c = result < -0x8000 or 0x7fff <= result
 
         self.reg(result, dword=True)
 
@@ -772,10 +767,10 @@ class VM :
         result = d//self.src()
         result2 = d%self.src()
         
-        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-        self.condition_code['v'] = self.src() == 0 or result >= 0x100000000
-        self.condition_code['c'] = self.src() == 0
+        self.register.n = pdp11_util.is_negative(result, 16)
+        self.register.z = pdp11_util.is_zero(result, 16)
+        self.register.v = self.src() == 0 or result >= 0x100000000
+        self.register.c = self.src() == 0
 
         self.reg((result<<16)+result2, dword=True)
 
@@ -784,16 +779,16 @@ class VM :
         nn = pdp11_util.uint6toint6((self.src()&0x3f))
         result = pdp11_util.bitshift_uint16(dst, nn)
 
-        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-        self.condition_code['v'] = (result&0x8000) != (dst&0x8000)
+        self.register.n = pdp11_util.is_negative(result, 16)
+        self.register.z = pdp11_util.is_zero(result, 16)
+        self.register.v = (result&0x8000) != (dst&0x8000)
 
         if 0 < nn :
-          self.condition_code['c'] = (dst>>(16-nn))&1
+          self.register.c = (dst>>(16-nn))&1
         elif nn < 0 :
-          self.condition_code['c'] = (dst>>(abs(nn)-1))&1
+          self.register.c = (dst>>(abs(nn)-1))&1
         else :
-          self.condition_code['c'] = False
+          self.register.c = False
 
         self.reg(result)
 
@@ -802,16 +797,16 @@ class VM :
         nn = pdp11_util.uint6toint6((self.src()&0x3f))
         result = pdp11_util.bitshift_uint32(dst, nn)
 
-        self.condition_code['n'] = pdp11_util.is_negative(result, 32)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 32)
-        self.condition_code['v'] = (result&0x80000000) != (dst&0x80000000)
+        self.register.n = pdp11_util.is_negative(result, 32)
+        self.register.z = pdp11_util.is_zero(result, 32)
+        self.register.v = (result&0x80000000) != (dst&0x80000000)
         
         if 0 < nn :
-          self.condition_code['c'] = (dst>>(32-nn))&1
+          self.register.c = (dst>>(32-nn))&1
         elif nn < 0 :
-          self.condition_code['c'] = (dst>>(abs(nn)-1))&1
+          self.register.c = (dst>>(abs(nn)-1))&1
         else :
-          self.condition_code['c'] = False
+          self.register.c = False
 
         self.reg(result, dword=True)
 
@@ -826,9 +821,9 @@ class VM :
           else :
             result &= 0x00ff
 
-        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-        self.condition_code['v'] = False
+        self.register.n = pdp11_util.is_negative(result, 16)
+        self.register.z = pdp11_util.is_zero(result, 16)
+        self.register.v = False
 
         self.dst(result)
 
@@ -837,10 +832,10 @@ class VM :
         dst = self.dst()
         result = src+dst
 
-        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-        self.condition_code['v'] = ((0x8000 & src) == (0x8000 & dst) and (0x8000 & result) != (0x8000 & dst))
-        self.condition_code['c'] = result & 0x10000
+        self.register.n = pdp11_util.is_negative(result, 16)
+        self.register.z = pdp11_util.is_zero(result, 16)
+        self.register.v = ((0x8000 & src) == (0x8000 & dst) and (0x8000 & result) != (0x8000 & dst))
+        self.register.c = result & 0x10000
 
         self.dst(result)
 
@@ -849,10 +844,10 @@ class VM :
         dst = self.dst()
         result = dst+((~src)&0xffff)+1
 
-        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-        self.condition_code['v'] = ((0x8000 & src) != (0x8000 & dst) and (0x8000 & result) != (0x8000 & dst))
-        self.condition_code['c'] = result < 0x10000
+        self.register.n = pdp11_util.is_negative(result, 16)
+        self.register.z = pdp11_util.is_zero(result, 16)
+        self.register.v = ((0x8000 & src) != (0x8000 & dst) and (0x8000 & result) != (0x8000 & dst))
+        self.register.c = result < 0x10000
 
         self.dst(result)
 
@@ -862,34 +857,34 @@ class VM :
         if self.operation_mode == "byte" :
           result = src +((~dst)&0xff)+1
 
-          self.condition_code['n'] = pdp11_util.is_negative(result, 8)
-          self.condition_code['z'] = pdp11_util.is_zero(result, 8)
-          self.condition_code['v'] = ((0x80 & src) != (0x80 & dst) and (0x80 & result) == (0x80 & dst))
-          self.condition_code['c'] = result < 0x100
+          self.register.n = pdp11_util.is_negative(result, 8)
+          self.register.z = pdp11_util.is_zero(result, 8)
+          self.register.v = ((0x80 & src) != (0x80 & dst) and (0x80 & result) == (0x80 & dst))
+          self.register.c = result < 0x100
 
         else :
           result = src+((~dst)&0xffff)+1
 
-          self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-          self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-          self.condition_code['v'] = ((0x8000 & src) != (0x8000 & dst) and (0x8000 & result) == (0x8000 & dst))
-          self.condition_code['c'] = result < 0x10000 
+          self.register.n = pdp11_util.is_negative(result, 16)
+          self.register.z = pdp11_util.is_zero(result, 16)
+          self.register.v = ((0x8000 & src) != (0x8000 & dst) and (0x8000 & result) == (0x8000 & dst))
+          self.register.c = result < 0x10000 
 
       elif instruction['opcode'] == "bis" :
         result = self.src()|self.dst()
 
-        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-        self.condition_code['v'] = False
+        self.register.n = pdp11_util.is_negative(result, 16)
+        self.register.z = pdp11_util.is_zero(result, 16)
+        self.register.v = False
 
         self.dst(result)
 
       elif instruction['opcode'] == "bic" :
         result = (~self.src())&self.dst()
 
-        self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-        self.condition_code['z'] = pdp11_util.is_zero(result, 16)
-        self.condition_code['v'] = False
+        self.register.n = pdp11_util.is_negative(result, 16)
+        self.register.z = pdp11_util.is_zero(result, 16)
+        self.register.v = False
 
         self.dst(result)
 
@@ -897,99 +892,97 @@ class VM :
         result = self.src()&self.dst()
 
         if self.operation_mode == "byte" :
-          self.condition_code['n'] = pdp11_util.is_negative(result, 8)
-          self.condition_code['z'] = pdp11_util.is_zero(result, 8)
+          self.register.n = pdp11_util.is_negative(result, 8)
+          self.register.z = pdp11_util.is_zero(result, 8)
         else :
-          self.condition_code['n'] = pdp11_util.is_negative(result, 16)
-          self.condition_code['z'] = pdp11_util.is_zero(result, 16)
+          self.register.n = pdp11_util.is_negative(result, 16)
+          self.register.z = pdp11_util.is_zero(result, 16)
 
-        self.condition_code['v'] = False
+        self.register.v = False
 
       elif instruction['opcode'] == "br" :
-        self.registers[7] += 2*offset
+        self.register[7] += 2*offset
 
       elif instruction['opcode'] == "bne" :
-        if self.condition_code['z'] == False :
-          self.registers[7] += 2*offset
+        if self.register.z == False :
+          self.register[7] += 2*offset
 
       elif instruction['opcode'] == "beq" :
-        if self.condition_code['z'] == True :
-          self.registers[7] += 2*offset
+        if self.register.z == True :
+          self.register[7] += 2*offset
 
       elif instruction['opcode'] == "bpl" :
-        if self.condition_code['n'] == False :
-          self.registers[7] += 2*offset
+        if self.register.n == False :
+          self.register[7] += 2*offset
 
       elif instruction['opcode'] == "bmi" :
-        if self.condition_code['n'] == True :
-          self.registers[7] += 2*offset
+        if self.register.n == True :
+          self.register[7] += 2*offset
 
       elif instruction['opcode'] == "bvc" :
-        if self.condition_code['v'] == False :
-          self.registers[7] += 2*offset
+        if self.register.v == False :
+          self.register[7] += 2*offset
 
       elif instruction['opcode'] == "bvs" :
-        if self.condition_code['v'] == True :
-          self.registers[7] += 2*offset
+        if self.register.v == True :
+          self.register[7] += 2*offset
 
       elif instruction['opcode'] == "bcc" :
-        if self.condition_code['c'] == False :
-          self.registers[7] += 2*offset
+        if self.register.c == False :
+          self.register[7] += 2*offset
 
       elif instruction['opcode'] == "bcs" :
-        if self.condition_code['c'] == True :
-          self.registers[7] += 2*offset
+        if self.register.c == True :
+          self.register[7] += 2*offset
 
       elif instruction['opcode'] == "bge" :
-        if ( (self.condition_code['n'] != self.condition_code['v']) == False) :
-          self.registers[7] += 2*offset
+        if ( (self.register.n != self.register.v) == False) :
+          self.register[7] += 2*offset
 
       elif instruction['opcode'] == "blt" :
-        if ( (self.condition_code['n'] != self.condition_code['v']) == True) :
-          self.registers[7] += 2*offset
+        if ( (self.register.n != self.register.v) == True) :
+          self.register[7] += 2*offset
 
       elif instruction['opcode'] == "bgt" :
-        if ( self.condition_code['z'] or
-             (self.condition_code['n'] != self.condition_code['v'])) == False :
-          self.registers[7] += 2*offset
+        if ( self.register.z or
+             (self.register.n != self.register.v)) == False :
+          self.register[7] += 2*offset
 
       elif instruction['opcode'] == "ble" :
-        if ( self.condition_code['z'] or
-             (self.condition_code['n'] != self.condition_code['v'])) == True:
-          self.registers[7] += 2*offset
+        if ( self.register.z or
+             (self.register.n != self.register.v)) == True:
+          self.register[7] += 2*offset
 
       elif instruction['opcode'] == "bhi" :
-        if ( self.condition_code['c'] == False and
-             self.condition_code['z'] == False ) :
-          self.registers[7] += 2*offset
+        if ( self.register.c == False and self.register.z == False ) :
+          self.register[7] += 2*offset
 
       elif instruction['opcode'] == "blos" :
-        if ( self.condition_code['c'] == True or
-             self.condition_code['z'] == True ) :
-          self.registers[7] += 2*offset
+        if ( self.register.c == True or self.register.z == True ) :
+          self.register[7] += 2*offset
 
       elif instruction['opcode'] == "jmp" :
         addr = self.dst.addr()
-        self.registers[7] = addr
+        self.register[7] = addr
 
       elif instruction['opcode'] == "sob" :
         result = self.reg()-1
         addr = self.dst.raw_value
 
         if (result&0xffff) != 0 :
-          self.registers[7] -= 2*addr
+          self.register[7] -= 2*addr
 
         self.reg(result)
 
       elif instruction['opcode'] == "jsr" :
         addr = self.dst.addr()
-        self.push(self.registers[instruction['operand']['r']])
-        self.reg(self.registers[7])
-        self.registers[7] = addr
+        self.push(self.register[instruction['operand']['r']])
+        self.reg(self.register[7])
+        self.register[7] = addr
 
       elif instruction['opcode'] == "rts" :
-        self.registers[7] = self.registers[instruction['operand']['r']]
-        self.registers[instruction['operand']['r']] = self.pop()
+        self.register[7] = self.register[instruction['operand']['r']]
+        self.register[instruction['operand']['r']] = self.pop()
 
       elif instruction['opcode'] == "rti" :
         if self.debug : self.debug.write(instruction['opcode']+" ")
@@ -1011,7 +1004,7 @@ class VM :
 
       elif instruction['opcode'] == "rtt" :
         addr = self.pop()
-        self.registers[7] = addr
+        self.register[7] = addr
 
       elif instruction['opcode'] == "cfcc" :
         pass
@@ -1054,9 +1047,9 @@ class VM :
     self.memory.setMode("byte")
     # initialize
     self.memory.resetByZero()
-    #   registers
+    #   register
     for i in range(8) :
-      self.registers[i] = 0
+      self.register[i] = 0
 
     # load program
     f = open(pdp11_util.chpath(args[0]), 'rb')
@@ -1064,7 +1057,7 @@ class VM :
     if six.PY2 :  program = map(ord, program)
     self.aout = pdp11_aout.getAout(program)
     self.memory.load(self.aout['text'] + self.aout['data'])
-    self.registers[7] = self.aout['header']['a_entry']
+    self.register[7] = self.aout['header']['a_entry']
 
     # set argv
     argc = [len(args)&0xff, (len(args)>>8)&0xff]
@@ -1086,7 +1079,7 @@ class VM :
       data += [0]
 
     self.memory.load(argc+argv+data, 0x10000-len(argc+argv+data))
-    self.registers[6] = 0x10000-len(argc+argv+data)
+    self.register[6] = 0x10000-len(argc+argv+data)
 
     self.sighandler = 0
 
